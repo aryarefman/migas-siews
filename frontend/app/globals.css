@@ -1,0 +1,132 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+:root {
+  --background: #0a0e17;
+  --foreground: #e2e8f0;
+  --card-bg: #111827;
+  --card-border: #1e293b;
+  --accent-amber: #f59e0b;
+  --accent-red: #ef4444;
+  --accent-green: #10b981;
+  --accent-blue: #3b82f6;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background-color: #05070a;
+  background-image: 
+    radial-gradient(circle at center, transparent 0%, rgba(5, 7, 10, 0.8) 100%),
+    linear-gradient(rgba(255, 255, 255, 0.06) 1.5px, transparent 1.5px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.06) 1.5px, transparent 1.5px);
+  background-size: 100% 100%, 40px 40px, 40px 40px;
+  background-attachment: fixed;
+  color: var(--foreground);
+  font-family: 'Inter', system-ui, sans-serif;
+  min-height: 100vh;
+}
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0f1117;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+/* Custom utility classes */
+@layer components {
+  .glass-card {
+    @apply bg-industrial-900 border border-industrial-800 rounded-lg;
+  }
+
+  .btn-primary {
+    @apply px-4 py-2 bg-amber-500 text-industrial-950 rounded-md font-bold 
+           hover:bg-amber-400 transition-all duration-200 
+           active:scale-95;
+  }
+
+  .btn-danger {
+    @apply px-4 py-2 bg-red-600 text-white rounded-md font-bold
+           hover:bg-red-500 transition-all duration-200
+           active:scale-95;
+  }
+
+  .btn-ghost {
+    @apply px-4 py-2 bg-industrial-800 text-industrial-300 rounded-md font-medium border border-industrial-700
+           hover:bg-industrial-700 hover:text-white transition-all duration-200 active:scale-95;
+  }
+
+  .input-field {
+    @apply w-full px-3 py-2 bg-industrial-950 border border-industrial-800 rounded-md text-white
+           placeholder-industrial-600 focus:outline-none focus:border-amber-500
+           transition-all duration-200;
+  }
+
+  .badge-high {
+    @apply inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase
+           bg-red-600 text-white;
+  }
+
+  .badge-low {
+    @apply inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase
+           bg-amber-500 text-industrial-950;
+  }
+
+  .badge-safe {
+    @apply inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase
+           bg-emerald-600 text-white;
+  }
+
+  .stat-card {
+    @apply bg-industrial-900 border border-industrial-800 p-4 flex flex-col gap-1 rounded-lg;
+  }
+}
+
+/* Pulsing dot for status indicators */
+.status-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.status-dot.online {
+  @apply bg-emerald-500;
+}
+
+.status-dot.offline {
+  @apply bg-red-500;
+}
+
+/* Shutdown banner pulse (Flat) */
+.shutdown-pulse {
+  animation: shutdown-flat 1.5s ease-in-out infinite;
+}
+
+@keyframes shutdown-flat {
+  0%, 100% {
+    @apply border-red-600 bg-red-950;
+  }
+  50% {
+    @apply border-red-500 bg-red-900;
+  }
+}
+

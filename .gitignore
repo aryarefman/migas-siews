@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+backend/venv/
+backend/__pycache__/
+*.pyc
+
+# Database & Storage
+backend/siews.db
+backend/static/snapshots/
+.env
+.env.local
+
+# Next.js
+.next/
+out/
+build/
+
+# OS
+.DS_Store
+Thumbs.db

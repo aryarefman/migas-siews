@@ -21,10 +21,28 @@ def get_db():
         db.close()
 
 
+def _migrate_alert_columns():
+    """Add new columns to alerts table if they don't exist (SQLite safe migration)."""
+    migrations = [
+        "ALTER TABLE alerts ADD COLUMN violation_type VARCHAR(30) DEFAULT 'restricted_area'",
+        "ALTER TABLE alerts ADD COLUMN false_positive BOOLEAN DEFAULT 0",
+        "ALTER TABLE alerts ADD COLUMN ppe_detail TEXT",
+        "ALTER TABLE alerts ADD COLUMN persons_count INTEGER DEFAULT 0",
+    ]
+    with engine.connect() as conn:
+        for stmt in migrations:
+            try:
+                conn.execute(__import__("sqlalchemy").text(stmt))
+                conn.commit()
+            except Exception:
+                pass  # Column already exists
+
+
 def init_db():
     """Create all tables and seed default settings."""
-    from models import Zone, Alert, ShutdownLog, Setting
+    from models import Zone, Alert, ShutdownLog, Setting, DetectionLog, VideoJob  # noqa: F401
     Base.metadata.create_all(bind=engine)
+    _migrate_alert_columns()
 
     db = SessionLocal()
     try:

@@ -9,7 +9,7 @@ load_dotenv()
 
 CAMERA_SOURCE = os.getenv("CAMERA_SOURCE", "0")
 FACILITY_NAME = os.getenv("FACILITY_NAME", "Offshore Platform A")
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.5"))
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.3"))
 DETECTION_INTERVAL = int(os.getenv("DETECTION_INTERVAL", "3"))
 NOTIFY_COOLDOWN = int(os.getenv("NOTIFY_COOLDOWN", "300"))
 FONNTE_TOKEN = os.getenv("FONNTE_TOKEN", "")

@@ -42,6 +42,8 @@ export default function Navbar() {
     { href: "/dashboard", label: "Dashboard", icon: "📡" },
     { href: "/incidents", label: "Incidents", icon: "📋" },
     { href: "/zones", label: "Zones", icon: "🗺️" },
+    { href: "/analyze", label: "Analyze", icon: "🔍" },
+    { href: "/video-analysis", label: "Video", icon: "🎬" },
     { href: "/settings", label: "Settings", icon: "⚙️" },
   ];
 
@@ -71,20 +73,20 @@ export default function Navbar() {
           <div className="flex items-center gap-2">
             {navLinks.map((link) => {
               const isActive = pathname === link.href;
-              
+
               const getIcon = (label: string) => {
                 const props = { className: "w-3.5 h-3.5", fill: "currentColor" };
                 if (label === "Dashboard") return (
-                  <svg {...props} viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+                  <svg {...props} viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z" /></svg>
                 );
                 if (label === "Incidents") return (
-                  <svg {...props} viewBox="0 0 24 24"><path d="M19 3h-4.18C14.4 1.84 13.3 1 12 1s-2.4.84-2.82 2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 0c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1zm2 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+                  <svg {...props} viewBox="0 0 24 24"><path d="M19 3h-4.18C14.4 1.84 13.3 1 12 1s-2.4.84-2.82 2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 0c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1zm2 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z" /></svg>
                 );
                 if (label === "Zones") return (
-                  <svg {...props} viewBox="0 0 24 24"><path d="M20.5 3l-.16.03L15 5.1 9 3 3.36 4.9c-.21.07-.36.25-.36.48V20.5c0 .28.22.5.5.5l.16-.03L9 18.9l6 2.1 5.64-1.9c.21-.07.36-.25.36-.48V3.5c0-.28-.22-.5-.5-.5zM15 19l-6-2.11V5l6 2.11V19z"/></svg>
+                  <svg {...props} viewBox="0 0 24 24"><path d="M20.5 3l-.16.03L15 5.1 9 3 3.36 4.9c-.21.07-.36.25-.36.48V20.5c0 .28.22.5.5.5l.16-.03L9 18.9l6 2.1 5.64-1.9c.21-.07.36-.25.36-.48V3.5c0-.28-.22-.5-.5-.5zM15 19l-6-2.11V5l6 2.11V19z" /></svg>
                 );
                 if (label === "Settings") return (
-                  <svg {...props} viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+                  <svg {...props} viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" /></svg>
                 );
                 return null;
               };
@@ -95,10 +97,9 @@ export default function Navbar() {
                   href={link.href}
                   className={`
                     relative px-3 py-1.5 rounded flex items-center gap-2 text-[10px] font-black uppercase tracking-widest transition-all
-                    ${
-                      isActive
-                        ? "bg-amber-500 text-industrial-950"
-                        : "text-industrial-400 hover:text-white"
+                    ${isActive
+                      ? "bg-amber-500 text-industrial-950"
+                      : "text-industrial-400 hover:text-white"
                     }
                   `}
                 >
@@ -118,9 +119,8 @@ export default function Navbar() {
           <div className="hidden md:flex items-center gap-4 text-xs">
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-industrial-900/50 border border-industrial-800/50">
               <span
-                className={`status-dot ${
-                  stats.camera_status === "online" ? "online" : "offline"
-                }`}
+                className={`status-dot ${stats.camera_status === "online" ? "online" : "offline"
+                  }`}
               />
               <span className="text-industrial-400">
                 Camera:{" "}

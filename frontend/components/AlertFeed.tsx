@@ -16,6 +16,10 @@ interface AlertData {
   snapshot_url: string;
   shutdown_triggered: boolean;
   resolved?: boolean;
+  violation_type?: string;
+  ppe_detail?: Record<string, number>;
+  false_positive?: boolean;
+  persons_count?: number;
 }
 
 interface AlertFeedProps {
@@ -119,6 +123,23 @@ export default function AlertFeed({ onAlert, onShutdown }: AlertFeedProps) {
     }
   };
 
+  const markFalsePositive = async (alertId: number) => {
+    try {
+      await fetch(`${API_URL}/alerts/${alertId}/false-positive`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      setAlerts((prev) =>
+        prev.map((a) =>
+          a.alert_id === alertId ? { ...a, false_positive: true, resolved: true } : a
+        )
+      );
+    } catch (err) {
+      console.error("Failed to mark false positive", err);
+    }
+  };
+
   const unresolvedCount = alerts.filter((a) => !a.resolved).length;
 
   return (
@@ -128,7 +149,7 @@ export default function AlertFeed({ onAlert, onShutdown }: AlertFeedProps) {
         <div className="flex items-center justify-between">
           <h2 className="text-[10px] font-black text-white tracking-[0.2em] uppercase flex items-center gap-2">
             <svg className="w-3.5 h-3.5 text-red-600" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" />
             </svg>
             Log Alert
           </h2>
@@ -139,9 +160,8 @@ export default function AlertFeed({ onAlert, onShutdown }: AlertFeedProps) {
               </span>
             )}
             <div
-              className={`w-2 h-2 ${
-                connected ? "bg-emerald-500" : "bg-red-500"
-              }`}
+              className={`w-2 h-2 ${connected ? "bg-emerald-500" : "bg-red-500"
+                }`}
             />
           </div>
         </div>
@@ -152,7 +172,7 @@ export default function AlertFeed({ onAlert, onShutdown }: AlertFeedProps) {
         {alerts.length === 0 ? (
           <div className="text-center py-12 text-industrial-600">
             <svg className="w-10 h-10 mx-auto mb-3 opacity-20" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/>
+              <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z" />
             </svg>
             <p className="text-[10px] font-black uppercase tracking-widest">Area Secured</p>
           </div>
@@ -162,6 +182,7 @@ export default function AlertFeed({ onAlert, onShutdown }: AlertFeedProps) {
               key={`${alert.alert_id}-${idx}`}
               alert={alert}
               onResolve={resolveAlert}
+              onFalsePositive={markFalsePositive}
             />
           ))
         )}

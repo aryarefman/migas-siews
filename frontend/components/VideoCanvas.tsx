@@ -35,10 +35,9 @@ export default function VideoCanvas({
 
   // Handle canvas resize to match the image
   const updateCanvasSize = useCallback(() => {
-    const img = imgRef.current;
     const canvas = canvasRef.current;
-    if (!img || !canvas) return;
-
+    const img = imgRef.current;
+    if (!canvas || !img) return;
     const rect = img.getBoundingClientRect();
     canvas.width = rect.width;
     canvas.height = rect.height;
@@ -61,9 +60,6 @@ export default function VideoCanvas({
     const w = canvas.width;
     const h = canvas.height;
 
-    // Draw active zones (the backend already draws them on the MJPEG frame,
-    // but we also draw on canvas for interactive editing)
-    // We only draw on canvas when in drawing mode to avoid doubling
     if (drawingMode) {
       zones.forEach((zone) => {
         if (!zone.active) return;
@@ -86,16 +82,13 @@ export default function VideoCanvas({
       });
     }
 
-    // Draw current vertices being placed
     if (currentVertices.length > 0) {
       const pts = currentVertices.map(([x, y]) => [x * w, y * h]);
 
-      // Draw lines
       ctx.beginPath();
       ctx.moveTo(pts[0][0], pts[0][1]);
       pts.slice(1).forEach(([x, y]) => ctx.lineTo(x, y));
 
-      // Preview line to mouse
       if (mousePos) {
         ctx.lineTo(mousePos.x, mousePos.y);
       }
@@ -106,7 +99,6 @@ export default function VideoCanvas({
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Draw vertices
       pts.forEach(([x, y]) => {
         ctx.beginPath();
         ctx.arc(x, y, 5, 0, Math.PI * 2);
@@ -117,7 +109,6 @@ export default function VideoCanvas({
         ctx.stroke();
       });
 
-      // Vertex count label
       ctx.fillStyle = "rgba(0,0,0,0.7)";
       ctx.fillRect(pts[0][0] - 2, pts[0][1] - 22, 120, 18);
       ctx.fillStyle = "#22d3ee";
@@ -129,7 +120,6 @@ export default function VideoCanvas({
       );
     }
 
-    // Flash effect on alert
     if (alertFlash) {
       ctx.strokeStyle = "rgba(239, 68, 68, 0.8)";
       ctx.lineWidth = 6;
@@ -138,7 +128,6 @@ export default function VideoCanvas({
       ctx.fillStyle = "rgba(239, 68, 68, 0.15)";
       ctx.fillRect(0, 0, w, h);
 
-      // Alert Text
       ctx.fillStyle = "#ef4444";
       ctx.font = "black 48px Inter, sans-serif";
       ctx.textAlign = "center";
@@ -183,7 +172,6 @@ export default function VideoCanvas({
 
   const handleImgError = () => {
     setCameraOnline(false);
-    // Retry after 5 seconds
     setTimeout(() => {
       if (imgRef.current) {
         imgRef.current.src = `${API_URL}/stream?t=${Date.now()}`;
@@ -195,14 +183,12 @@ export default function VideoCanvas({
   return (
     <div
       ref={containerRef}
-      className={`relative h-full w-full rounded-xl overflow-hidden border-2 transition-all duration-300 flex flex-col bg-black ${
-        alertFlash
-          ? "border-red-500 shadow-lg shadow-red-500/30"
-          : "border-industrial-700/50"
-      }`}
+      className={`relative h-full w-full rounded-xl overflow-hidden border-2 transition-all duration-300 flex flex-col bg-black ${alertFlash
+        ? "border-red-500 shadow-lg shadow-red-500/30"
+        : "border-industrial-700/50"
+        }`}
     >
-      {/* MJPEG Stream */}
-      {/* eslint-disable-next-line @next/next/no-img-element */}
+      {/* MJPEG Server Feed */}
       <img
         ref={imgRef}
         src={`${API_URL}/stream`}
@@ -216,9 +202,8 @@ export default function VideoCanvas({
       {/* Interactive Canvas Overlay */}
       <canvas
         ref={canvasRef}
-        className={`absolute top-0 left-0 w-full h-full ${
-          drawingMode ? "cursor-crosshair" : "pointer-events-none"
-        }`}
+        className={`absolute top-0 left-0 w-full h-full ${drawingMode ? "cursor-crosshair" : "pointer-events-none"
+          }`}
         onClick={handleCanvasClick}
         onDoubleClick={handleCanvasDoubleClick}
         onMouseMove={handleMouseMove}
@@ -228,7 +213,7 @@ export default function VideoCanvas({
       {!cameraOnline && (
         <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center">
           <svg className="w-12 h-12 text-red-600 mb-4" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/>
+            <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z" />
           </svg>
           <p className="text-[10px] text-red-500 font-black uppercase tracking-[0.3em]">CAMERA FEED OFFLINE</p>
           <p className="text-industrial-500 text-[9px] font-bold uppercase mt-2">
@@ -250,9 +235,9 @@ export default function VideoCanvas({
 
       {/* Live indicator */}
       <div className="absolute top-3 right-3 flex items-center gap-2 px-2.5 py-1 rounded-md bg-black/60 backdrop-blur-sm">
-        <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+        <div className={`w-2 h-2 rounded-full ${cameraOnline ? "bg-red-500 animate-pulse" : "bg-gray-600"}`} />
         <span className="text-white text-xs font-medium tracking-wider">
-          LIVE
+          {cameraOnline ? "LIVE" : "OFF"}
         </span>
       </div>
     </div>

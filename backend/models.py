@@ -50,6 +50,10 @@ class Alert(Base):
     # "restricted_area" | "missing_ppe" | "no_harness" | "fire_smoke" | "multiple"
     false_positive = Column(Boolean, default=False)
     ppe_detail = Column(Text, nullable=True)  # JSON: {helmet: bool, vest: bool, harness: bool, ...}
+    
+    # Identification additions
+    person_name = Column(String(100), nullable=True)
+    uniform_code = Column(String(50), nullable=True)
 
     zone = relationship("Zone", back_populates="alerts")
     detection_logs = relationship("DetectionLog", back_populates="alert")

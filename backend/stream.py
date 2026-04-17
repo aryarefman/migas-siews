@@ -1,602 +1,531 @@
 """
-SIEWS+ 5.0 — MJPEG Stream + Multi-Stage Pipeline + Zone Violation Check
-
-Key upgrades over v1:
-- MultiStagePipeline: person → PPE/harness → fire/smoke
-- Consistency check: N consecutive frames before alert fires (false positive prevention)
-- Object-level crop logging: each detected object saved as crop image
-- Multi violation types: restricted_area | missing_ppe | no_harness | fire_smoke | multiple
+SIEWS+ 5.0 MJPEG Stream + YOLO Inference + Zone Violation Check
+Core detection and streaming pipeline.
 """
+import os
 import cv2
 import json
-import os
 import time
 import asyncio
 import numpy as np
-from collections import defaultdict
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import List, Optional, Set
-
-from detector import MultiStagePipeline
+from detector import UnifiedDetector
 from polygon import point_in_polygon, parse_vertices, compute_centroid
 from notifier import send_to_all_recipients
+from face_manager import face_manager
+from ocr_engine import ocr_engine
+from go_polygon_client import batch_check_violations_sync
 from shutdown import trigger_relay, log_shutdown
 from database import SessionLocal
-from models import Zone, Alert, DetectionLog, Setting
+from models import Zone, Alert, Setting
 from config import SNAPSHOT_DIR
-from video_processor import UPLOADS_DIR
-
-# Consistency check: violation must appear in this many consecutive detection
-# cycles before triggering an alert (prevents single-frame false positives)
-CONSISTENCY_FRAMES_REQUIRED = 4
-
-# Crop directory for object-level snapshots
-CROPS_DIR = os.path.join(SNAPSHOT_DIR, "crops")
-os.makedirs(CROPS_DIR, exist_ok=True)
 
 
 class StreamManager:
-    """Manages camera stream, multi-stage YOLO detection, and zone violation pipeline."""
+    """Manages camera stream, YOLO detection, and zone violation pipeline."""
 
     def __init__(self):
-        self.pipeline: Optional[MultiStagePipeline] = None
+        self.detector: Optional[UnifiedDetector] = None
+        self.pipeline: Optional[UnifiedDetector] = None
         self.cap: Optional[cv2.VideoCapture] = None
         self.frame_count = 0
-        self.zone_cooldowns: dict = {}       # zone_id -> last_alert_timestamp
+        self.zone_cooldowns: dict = {}  # zone_id -> last_alert_timestamp
         self.ws_clients: Set = set()
         self.running = False
-
-        # Last pipeline results (reused between detection intervals)
         self._last_persons: List[dict] = []
-        self._last_env: List[dict] = []
-        self._last_infra: List[dict] = []
-
-        # Consistency tracking: counts consecutive detections per (zone_id, violation_type)
-        self._consistency_counters: dict = defaultdict(int)
-
-        # Settings
+        self._last_hazards: List[dict] = []
         self._camera_source = "0"
-        self._confidence = 0.3
+        self._confidence = 0.5
         self._detection_interval = 3
         self._notify_cooldown = 300
+        self.frame = None  # Storage for the current JPEG frame
+        self.simulation_frame: Optional[np.ndarray] = None  # For test simulation
 
     def load_settings(self):
+        """Load settings from database."""
         db = SessionLocal()
         try:
             settings = {s.key: s.value for s in db.query(Setting).all()}
             self._camera_source = settings.get("camera_source", "0")
-            self._confidence = float(settings.get("confidence_threshold", "0.3"))
+            self._confidence = float(settings.get("confidence_threshold", "0.5"))
             self._detection_interval = int(settings.get("detection_interval", "3"))
-            self._notify_cooldown = int(settings.get("notify_cooldown", "300"))
+            self._notify_cooldown = 5  # Force 5 seconds for testing
         finally:
             db.close()
 
-    def init_pipeline(self, force: bool = False):
-        if self.pipeline is not None and not force:
-            return
-        self.pipeline = MultiStagePipeline(
-            confidence=self._confidence,
-            ppe_confidence=0.01,
-        )
+    def init_detector(self):
+        """Initialize or reinitialize the YOLO detector."""
+        from detector import MultiStagePipeline
+        self.detector = MultiStagePipeline(confidence=self._confidence)
+        self.pipeline = self.detector
 
-    def open_camera(self) -> bool:
+    def init_pipeline(self):
+        """Alias for init_detector for compatibility."""
+        self.init_detector()
+
+    def open_camera(self):
+        """Open or reopen the camera source."""
         if self.cap is not None:
             self.cap.release()
+
         source = self._camera_source
         if source.isdigit():
             source = int(source)
+
         self.cap = cv2.VideoCapture(source)
         if not self.cap.isOpened():
-            print(f"[STREAM] Failed to open camera: {self._camera_source}")
+            print(f"[STREAM] Failed to open camera source: {self._camera_source}")
             self.cap = None
             return False
+
         print(f"[STREAM] Camera opened: {self._camera_source}")
         return True
 
+    def get_frame(self):
+        """Returns the current frame as encoded bytes."""
+        if self.frame is None:
+            # Placeholder for black frame
+            black = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(black, "INITIALIZING...", (180, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
+            _, jp = cv2.imencode(".jpg", black)
+            return jp.tobytes()
+        return self.frame
+
+    def generate_frames(self):
+        """Generator for the MJPEG video stream."""
+        print("[STREAM] MJPEG Stream client connected")
+        while True:
+            frame = self.get_frame()
+            if not frame:
+                time.sleep(0.1)
+                continue
+            
+            yield (
+                b'--frame\r\n'
+                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n'
+            )
+            # Control frame rate for clients
+            time.sleep(0.04)
+
     def get_active_zones(self) -> List[dict]:
+        """Get all active zones from DB."""
         db = SessionLocal()
         try:
             zones = db.query(Zone).filter(Zone.active == True).all()
-            return [
-                {
+            result = []
+            for z in zones:
+                result.append({
                     "id": z.id,
                     "name": z.name,
                     "vertices": parse_vertices(z.vertices_json),
                     "color": z.color,
                     "risk_level": z.risk_level,
-                }
-                for z in zones
-            ]
+                })
+            return result
         finally:
             db.close()
-
-    # ─── Crop Helpers ──────────────────────────────────────────────────────────
-
-    def _save_crop(self, frame: np.ndarray, bbox: List[int], prefix: str) -> Optional[str]:
-        """Crop a bounding box from frame and save as JPEG. Returns relative path."""
-        h, w = frame.shape[:2]
-        x1, y1, x2, y2 = bbox
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(w, x2), min(h, y2)
-        crop = frame[y1:y2, x1:x2]
-        if crop.size == 0:
-            return None
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
-        filename = f"{prefix}_{ts}.jpg"
-        full_path = os.path.join(CROPS_DIR, filename)
-        cv2.imwrite(full_path, crop, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        return f"static/snapshots/crops/{filename}"
-
-    def _log_detection_crops(
-        self,
-        db,
-        frame: np.ndarray,
-        alert_id: int,
-        persons: List[dict],
-        env: List[dict],
-        frame_number: int,
-    ):
-        """Save per-object crops and write DetectionLog entries."""
-        for person in persons:
-            # Log person crop
-            crop_path = self._save_crop(frame, person["bbox"], "person")
-            db.add(DetectionLog(
-                alert_id=alert_id,
-                class_name="person",
-                confidence=person["confidence"],
-                crop_path=crop_path,
-                frame_number=frame_number,
-                bbox_json=json.dumps(person["bbox"]),
-            ))
-            # Log each PPE violation as separate crop
-            for viol in person.get("ppe_violations", []):
-                db.add(DetectionLog(
-                    alert_id=alert_id,
-                    class_name=viol,
-                    confidence=person["ppe"].get(viol, {}).get("confidence", 0.0),
-                    crop_path=crop_path,  # same person crop
-                    frame_number=frame_number,
-                    bbox_json=json.dumps(person["bbox"]),
-                ))
-        for det in env:
-            crop_path = self._save_crop(frame, det["bbox"], det["class_name"])
-            db.add(DetectionLog(
-                alert_id=alert_id,
-                class_name=det["class_name"],
-                confidence=det["confidence"],
-                crop_path=crop_path,
-                frame_number=frame_number,
-                bbox_json=json.dumps(det["bbox"]),
-            ))
-        db.commit()
-
-    # ─── Violation Detection ───────────────────────────────────────────────────
-
-    def _determine_violation_type(self, person: dict, in_zone: bool) -> Optional[str]:
-        """Determine the primary violation type for a person detection."""
-        violations = []
-        if in_zone:
-            violations.append("restricted_area")
-        viols = person.get("ppe_violations", [])
-        if "no_helmet" in viols or "no_vest" in viols:
-            violations.append("missing_ppe")
-        if "no_harness" in viols:
-            violations.append("no_harness")
-        if not violations:
-            return None
-        if len(violations) > 1:
-            return "multiple"
-        return violations[0]
-
-    def _check_consistency(self, key: str, is_active: bool) -> bool:
-        """
-        Track consecutive detection count for a key.
-        Returns True only when threshold is first reached (edge trigger).
-        Resets counter when violation disappears.
-        """
-        if is_active:
-            self._consistency_counters[key] += 1
-            return self._consistency_counters[key] == CONSISTENCY_FRAMES_REQUIRED
-        else:
-            self._consistency_counters[key] = 0
-            return False
-
-    # ─── Alert Handler ─────────────────────────────────────────────────────────
-
-    async def handle_violation(
-        self,
-        frame: np.ndarray,
-        zone: dict,
-        confidence: float,
-        violation_type: str,
-        persons_in_violation: List[dict],
-        env_detections: List[dict],
-    ):
-        """Save snapshot, log alert + crops, notify, trigger shutdown."""
-        zone_id = zone["id"]
-        zone_name = zone["name"]
-        risk_level = zone["risk_level"]
-        now = time.time()
-
-        cooldown_key = f"{zone_id}_{violation_type}"
-        last_alert = self.zone_cooldowns.get(cooldown_key, 0)
-        if now - last_alert < self._notify_cooldown:
-            return
-
-        self.zone_cooldowns[cooldown_key] = now
-
-        # Full-frame snapshot
-        ts_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        snap_filename = f"{ts_str}_{zone_id}_{violation_type}.jpg"
-        snap_full = os.path.join(SNAPSHOT_DIR, snap_filename)
-        cv2.imwrite(snap_full, frame)
-        snapshot_path = f"static/snapshots/{snap_filename}"
-
-        shutdown_triggered = (risk_level == "high") and (
-            violation_type in {"restricted_area", "no_harness", "multiple"}
-        )
-
-        # Build PPE detail JSON
-        ppe_detail = {}
-        for p in persons_in_violation:
-            for cls_name, info in p.get("ppe", {}).items():
-                ppe_detail[cls_name] = round(info["confidence"], 3)
-
-        db = SessionLocal()
-        try:
-            alert = Alert(
-                zone_id=zone_id,
-                confidence=confidence,
-                snapshot_path=snapshot_path,
-                timestamp=datetime.now(timezone.utc),
-                shutdown_triggered=shutdown_triggered,
-                resolved=False,
-                violation_type=violation_type,
-                ppe_detail=json.dumps(ppe_detail) if ppe_detail else None,
-            )
-            db.add(alert)
-            db.commit()
-            db.refresh(alert)
-            alert_id = alert.id
-
-            # Log per-object crops
-            self._log_detection_crops(
-                db, frame, alert_id,
-                persons_in_violation, env_detections,
-                self.frame_count,
-            )
-
-            if shutdown_triggered:
-                log_shutdown(db, zone_id, trigger_source="auto")
-                trigger_relay(zone_name)
-
-            settings = {s.key: s.value for s in db.query(Setting).all()}
-        finally:
-            db.close()
-
-        # WhatsApp notification
-        asyncio.create_task(
-            send_to_all_recipients(
-                settings.get("recipients", ""),
-                zone_name, risk_level, confidence,
-                shutdown_triggered,
-                settings.get("facility_name", "Offshore Platform A"),
-                settings.get("fonnte_token", ""),
-            )
-        )
-
-        # WebSocket broadcast
-        ws_event = {
-            "type": "alert",
-            "alert_id": alert_id,
-            "zone_name": zone_name,
-            "zone_id": zone_id,
-            "risk_level": risk_level,
-            "violation_type": violation_type,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "confidence": round(confidence, 3),
-            "snapshot_url": f"/{snapshot_path}",
-            "shutdown_triggered": shutdown_triggered,
-            "ppe_detail": ppe_detail,
-            "persons_count": len(persons_in_violation),
-        }
-        dead = set()
-        for ws in self.ws_clients:
-            try:
-                await ws.send_json(ws_event)
-            except Exception:
-                dead.add(ws)
-        self.ws_clients -= dead
-
-    # ─── Drawing ───────────────────────────────────────────────────────────────
 
     def draw_zones(self, frame: np.ndarray, zones: List[dict]):
+        """Draw all active zone polygons on the frame."""
         h, w = frame.shape[:2]
         overlay = frame.copy()
+
         for zone in zones:
             vertices = zone["vertices"]
+            if not vertices:
+                continue
+                
             risk = zone["risk_level"]
+            name = zone["name"]
+
+            # Convert normalized coords to pixel coords
             pts = np.array([[int(v[0] * w), int(v[1] * h)] for v in vertices], dtype=np.int32)
-            fill_color = (0, 0, 180) if risk == "high" else (0, 180, 180)
-            border_color = (0, 0, 255) if risk == "high" else (0, 255, 255)
+
+            if risk == "high":
+                fill_color = (0, 0, 200)     # Red BGR
+                border_color = (0, 0, 255)
+            else:
+                fill_color = (0, 200, 200)    # Yellow BGR
+                border_color = (0, 255, 255)
+
+            # Semi-transparent fill
             cv2.fillPoly(overlay, [pts], fill_color)
+            # Border
             cv2.polylines(frame, [pts], True, border_color, 2, cv2.LINE_AA)
+
+            # Zone name label at centroid
             centroid = compute_centroid(vertices)
             cx, cy = int(centroid[0] * w), int(centroid[1] * h)
-            label = f"{zone['name']} ({risk.upper()})"
+            label = f"{name} ({risk.upper()})"
             (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
             cv2.rectangle(frame, (cx - tw // 2 - 4, cy - th - 6), (cx + tw // 2 + 4, cy + 4), (0, 0, 0), -1)
             cv2.putText(frame, label, (cx - tw // 2, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.5, border_color, 1, cv2.LINE_AA)
+
+        # Blend overlay with transparency
         cv2.addWeighted(overlay, 0.25, frame, 0.75, 0, frame)
 
-    def draw_persons(self, frame: np.ndarray, persons: List[dict], violation_indices: set):
-        for i, p in enumerate(persons):
-            x1, y1, x2, y2 = p["bbox"]
-            conf = p["confidence"]
-            viols = p.get("ppe_violations", [])
-            ppe_status = p.get("ppe", {})
-            is_violation = i in violation_indices or bool(viols)
+    def draw_persons(self, frame: np.ndarray, persons: List[dict], violations: set = None):
+        """Wrapper for drawing persons for compatibility."""
+        self.draw_detections(frame, persons, violations or set(), [])
 
-            # Build PPE status string from all detections
-            ppe_labels = [f"{k}:{v['confidence']:.0%}" for k, v in ppe_status.items()]
-            ppe_str = " | ".join(ppe_labels) if ppe_labels else "no PPE data"
+    def draw_env(self, frame: np.ndarray, hazards: List[dict]):
+        """Wrapper for drawing environmental hazards for compatibility."""
+        self.draw_detections(frame, [], set(), hazards)
 
-            if is_violation:
-                color = (0, 0, 255)
-                viol_label = ", ".join(viols) if viols else "RESTRICTED"
-                label = f"BAHAYA {conf:.0%} [{viol_label}]"
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
-                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
-                cv2.rectangle(frame, (x1, y1 - th - 10), (x1 + tw + 8, y1), (0, 0, 200), -1)
-                cv2.putText(frame, label, (x1 + 4, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
+    def draw_road(self, frame: np.ndarray, hazards: List[dict]):
+        """Alias for draw_env for road/general hazards."""
+        self.draw_env(frame, hazards)
+
+    def draw_detections(self, frame: np.ndarray, detections: List[dict], violations: set, hazards: List[dict]):
+        """Draw bounding boxes with full 3-stage detection info."""
+        # 1. Draw Hazards (Stage 3: Environment)
+        for haz in hazards:
+            x1, y1, x2, y2 = [int(v) for v in haz["bbox"]]
+            label = f"DANGER: {haz['label'].upper()} {haz['confidence']:.0%}"
+            color = (0, 0, 255)  # Red for hazards
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+            cv2.rectangle(frame, (x1, y1 - th - 10), (x1 + tw + 8, y1), color, -1)
+            cv2.putText(frame, label, (x1 + 4, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+        # 2. Draw People (Stage 1: Person + Stage 2: PPE)
+        for i, det in enumerate(detections):
+            x1, y1, x2, y2 = [int(v) for v in det["bbox"]]
+            conf = det["confidence"]
+            ppe_result = det.get("ppe_result", {})
+            
+            # Build PPE status string from Stage 2 results
+            ppe_parts = []
+            if ppe_result:
+                if ppe_result.get("has_helmet"): ppe_parts.append("Helm ✓")
+                if ppe_result.get("has_vest"): ppe_parts.append("Vest ✓")
+                if ppe_result.get("has_harness"): ppe_parts.append("Harness ✓")
+                # Show raw detected items for extra detail
+                raw = ppe_result.get("raw_labels", [])
+                for lbl in raw:
+                    if "gloves" in lbl: ppe_parts.append("Gloves ✓")
+                    if "boots" in lbl: ppe_parts.append("Boots ✓")
+                    if "goggles" in lbl: ppe_parts.append("Goggles ✓")
+            
+            ppe_str = ", ".join(ppe_parts) if ppe_parts else "No PPE"
+            
+            # Add identification info
+            id_str = ""
+            if det.get("face_name") and det["face_name"] != "Unknown":
+                id_str = f" [{det['face_name']}]"
+            elif det.get("ocr_code"):
+                id_str = f" [ID:{det['ocr_code']}]"
+
+            if i in violations:
+                color = (0, 0, 255)  # Red for Danger
+                label = f"BAHAYA {conf:.0%}{id_str}"
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 4)
+                
+                # Identification label
+                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                cv2.rectangle(frame, (x1, y1 - th - 12), (x1 + tw + 10, y1), color, -1)
+                cv2.putText(frame, label, (x1 + 5, y1 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+                
+                # PPE status below
+                (tw2, th2), _ = cv2.getTextSize(ppe_str, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+                cv2.rectangle(frame, (x1, y2), (x1 + tw2 + 8, y2 + th2 + 10), (0, 0, 0), -1)
+                cv2.putText(frame, ppe_str, (x1 + 4, y2 + th2 + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1, cv2.LINE_AA)
             else:
-                color = (0, 255, 0)
-                label = f"Person {conf:.0%} OK"
+                color = (0, 255, 0)  # Green
+                label = f"Person {conf:.0%}{id_str}"
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                # Main label
+                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
                 cv2.rectangle(frame, (x1, y1 - th - 6), (x1 + tw + 4, y1), (0, 0, 0), -1)
-                cv2.putText(frame, label, (x1 + 2, y1 - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+                cv2.putText(frame, label, (x1 + 2, y1 - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
+                # PPE label below
+                (tw2, th2), _ = cv2.getTextSize(ppe_str, cv2.FONT_HERSHEY_SIMPLEX, 0.35, 1)
+                cv2.rectangle(frame, (x1, y2), (x1 + tw2 + 6, y2 + th2 + 8), (0, 0, 0), -1)
+                cv2.putText(frame, ppe_str, (x1 + 3, y2 + th2 + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 200, 0), 1, cv2.LINE_AA)
 
-            # Draw PPE status line below bounding box
-            ppe_color = (0, 0, 255) if viols else (0, 220, 255)
-            (pw, ph), _ = cv2.getTextSize(ppe_str, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
-            cv2.rectangle(frame, (x1, y2), (x1 + pw + 6, y2 + ph + 6), (0, 0, 0), -1)
-            cv2.putText(frame, ppe_str, (x1 + 3, y2 + ph + 2), cv2.FONT_HERSHEY_SIMPLEX, 0.42, ppe_color, 1, cv2.LINE_AA)
+    async def handle_violation(self, frame: np.ndarray, zone: dict, confidence: float, person_name: str = None, uniform_code: str = None):
+        """Handle a zone violation: save snapshot, log alert, notify, trigger shutdown."""
+        try:
+            from datetime import datetime, timezone, timedelta
+            zone_id = zone["id"]
+            zone_name = zone["name"]
+            risk_level = zone["risk_level"]
+            now = time.time()
 
-    # ── Warna per class S3 (openhole model) ──────────────────────────────
-    _ENV_COLORS = {
-        "open-hole":    (0,   0,   220),   # merah  — bahaya utama
-        "barricade":    (0,   140, 255),   # oranye — pembatas
-        "safety-cone":  (0,   200, 255),   # kuning — kerucut
-        "hard-hat":     (0,   200,  80),   # hijau  — helm
-        "vest":         (200, 200,   0),   # cyan   — rompi
-        "fire":         (0,   40,  255),   # merah terang
-        "smoke":        (120, 120, 120),   # abu
-    }
+            # 1. Check cooldown
+            last_alert = self.zone_cooldowns.get(zone_id, 0)
+            if now - last_alert < self._notify_cooldown:
+                return
 
-    def draw_env(self, frame: np.ndarray, env: List[dict]):
-        for det in env:
-            x1, y1, x2, y2 = det["bbox"]
-            cls = det["class_name"]
-            conf = det["confidence"]
-            color = self._ENV_COLORS.get(cls, (100, 100, 100))
-            label = f"{cls.upper()} {conf:.0%}"
-            thickness = 3 if cls == "open-hole" else 2
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
-            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2)
-            cv2.rectangle(frame, (x1, y1 - th - 10), (x1 + tw + 8, y1), color, -1)
-            cv2.putText(frame, label, (x1 + 4, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA)
+            self.zone_cooldowns[zone_id] = now
+            print(f"[ALERT-FLOW] 1. Starting alert process for {zone_name}...")
 
-    def draw_infra(self, frame: np.ndarray, infra: List[dict]):
-        for det in infra:
-            x1, y1, x2, y2 = det["bbox"]
-            cls = det["class_name"]
-            conf = det["confidence"]
-            color = (255, 165, 0)  # orange for infrastructure
-            label = f"{cls.upper()} {conf:.0%}"
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-            cv2.rectangle(frame, (x1, y1 - th - 8), (x1 + tw + 6, y1), (180, 100, 0), -1)
-            cv2.putText(frame, label, (x1 + 3, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+            # 2. Save snapshot
+            now_utc = datetime.now(timezone.utc)
+            timestamp_str = now_utc.strftime("%Y%m%d_%H%M%S")
+            snapshot_filename = f"{timestamp_str}_{zone_id}.jpg"
+            snapshot_path = f"static/snapshots/{snapshot_filename}"
+            full_path = os.path.join(SNAPSHOT_DIR, snapshot_filename)
+            cv2.imwrite(full_path, frame)
+            print(f"[ALERT-FLOW] 2. Snapshot saved: {snapshot_path}")
 
-    # ── Warna per class S5 (road damage model) ─────────────────────────────────
-    _ROAD_COLORS = {
-        "lubang":    (0,   0,   255),   # biru    — pothole utama
-        "retak":     (0,   150, 255),   # orange  — crack
-        "tambalan":  (0,   255,   0),   # hijau   — patch/repair
-    }
+            # 3. DB Logging
+            shutdown_triggered = (risk_level == "high")
+            db = SessionLocal()
+            alert_id = 0
+            try:
+                alert = Alert(
+                    zone_id=zone_id,
+                    confidence=confidence,
+                    snapshot_path=snapshot_path,
+                    timestamp=now_utc,
+                    shutdown_triggered=shutdown_triggered,
+                    resolved=False,
+                    violation_type="restricted_area",
+                    person_name=person_name,
+                    uniform_code=uniform_code,
+                )
+                db.add(alert)
+                db.commit()
+                db.refresh(alert)
+                alert_id = alert.id
+                print(f"[ALERT-FLOW] 3. DB Logged (ID: {alert_id})")
 
-    def draw_road(self, frame: np.ndarray, road: List[dict]):
-        for det in road:
-            x1, y1, x2, y2 = det["bbox"]
-            cls = det["class_name"]
-            conf = det["confidence"]
-            color = self._ROAD_COLORS.get(cls, (128, 128, 128))
-            label = f"{cls.upper()} {conf:.0%}"
-            thickness = 3 if cls == "lubang" else 2
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
-            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2)
-            cv2.rectangle(frame, (x1, y1 - th - 10), (x1 + tw + 8, y1), color, -1)
-            cv2.putText(frame, label, (x1 + 4, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA)
+                if shutdown_triggered:
+                    from shutdown import log_shutdown, trigger_relay
+                    log_shutdown(db, zone_id, trigger_source="auto")
+                    trigger_relay(zone_name)
+                    print(f"[ALERT-FLOW] 4. Shutdown triggered")
 
-    # ─── Main Frame Generator ──────────────────────────────────────────────────
+                settings = {s.key: s.value for s in db.query(Setting).all()}
+            except Exception as dbe:
+                print(f"[ALERT-FLOW] !!! DB Error: {dbe}")
+                db.rollback()
+                settings = {}
+            finally:
+                db.close()
 
-    def _offline_frame(self) -> bytes:
-        """Return a static JPEG frame indicating camera is offline. No fake detections."""
-        h, w = 480, 640
-        frame = np.zeros((h, w, 3), dtype=np.uint8)
-        # Subtle border
-        cv2.rectangle(frame, (2, 2), (w - 3, h - 3), (40, 40, 40), 1)
-        # Camera icon (circle + lens)
-        cx, cy = w // 2, h // 2 - 20
-        cv2.circle(frame, (cx, cy), 36, (55, 55, 55), 2)
-        cv2.circle(frame, (cx, cy), 18, (55, 55, 55), 2)
-        cv2.line(frame, (cx - 50, cy - 36), (cx + 50, cy - 36), (55, 55, 55), 2)
-        # Status text
-        cv2.putText(frame, "KAMERA OFFLINE", (w // 2 - 110, cy + 70),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (80, 80, 80), 1, cv2.LINE_AA)
-        cv2.putText(frame, "Menghubungkan kembali...", (w // 2 - 105, cy + 98),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (55, 55, 55), 1, cv2.LINE_AA)
-        _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-        return jpeg.tobytes()
+            # 4. WhatsApp Notification (Async Task)
+            fonnte_token = settings.get("fonnte_token", "")
+            recipients = settings.get("recipients", "")
+            facility_name = settings.get("facility_name", "Offshore Platform A")
 
-    async def generate_frames(self):
+            recipient_list = [r.strip() for r in recipients.split(",") if r.strip()]
+            if person_name and person_name != "Unknown":
+                from face_manager import face_manager
+                for p in face_manager._registered:
+                    if p["name"].lower() == person_name.lower() and p.get("phone"):
+                        if p["phone"] not in recipient_list:
+                            recipient_list.append(p["phone"])
+                            print(f"[ALERT-FLOW] 5. Added direct phone for {person_name}")
+            
+            final_recipients = ",".join(recipient_list)
+            asyncio.create_task(
+                send_to_all_recipients(
+                    final_recipients, zone_name, risk_level, confidence,
+                    shutdown_triggered, facility_name, fonnte_token,
+                    snapshot_url=f"/static/snapshots/{snapshot_filename}",
+                    person_name=person_name, uniform_code=uniform_code
+                )
+            )
+
+            # 5. WebSocket Broadcast
+            ws_event = {
+                "type": "alert",
+                "alert_id": alert_id,
+                "zone_name": zone_name,
+                "zone_id": zone_id,
+                "risk_level": risk_level,
+                "timestamp": now_utc.isoformat(),
+                "confidence": confidence,
+                "snapshot_url": f"/{snapshot_path}",
+                "shutdown_triggered": shutdown_triggered,
+                "person_name": person_name,
+                "uniform_code": uniform_code,
+            }
+            
+            dead_clients = set()
+            for ws in self.ws_clients:
+                try:
+                    await ws.send_json(ws_event)
+                except Exception:
+                    dead_clients.add(ws)
+            self.ws_clients -= dead_clients
+            print(f"[ALERT-FLOW] 6. Broadcast sent to {len(self.ws_clients)} clients")
+
+        except Exception as e:
+            print(f"[ALERT-FLOW] !!! CRITICAL FAIL: {e}")
+            import traceback
+            traceback.print_exc()
+
+    async def start(self):
+        """
+        Main generator: capture frames, detect, check zones, yield MJPEG.
+        """
+        print("[STREAM] Starting stream generator...")
         self.load_settings()
-        self.init_pipeline(force=True)
+        
+        if not self.detector:
+            print("[STREAM] Initializing detector...")
+            self.init_detector()
 
-        camera_ok = self.open_camera()
+        if not self.open_camera():
+            print("[STREAM] Camera opening failed.")
+            # Storage for "no camera" frame
+            frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(frame, "KAMERA OFFLINE", (120, 220),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3, cv2.LINE_AA)
+            cv2.putText(frame, "Mencoba reconnect...", (150, 270),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1, cv2.LINE_AA)
+            _, jpeg = cv2.imencode(".jpg", frame)
+            self.frame = jpeg.tobytes()
+            # We don't yield here, we just wait for the main loop to handle it or retry
 
-        if not camera_ok:
-            # Try to use a real uploaded video file as fallback
-            fallback_video = None
-            if os.path.isdir(UPLOADS_DIR):
-                for f in sorted(Path(UPLOADS_DIR).glob("*.mp4"), reverse=True):
-                    fallback_video = str(f)
-                    break
-            if fallback_video:
-                self.cap = cv2.VideoCapture(fallback_video)
-                if self.cap.isOpened():
-                    print(f"[STREAM] Using uploaded video as fallback: {fallback_video}")
-                    camera_ok = True
-                else:
-                    self.cap = None
-
-        if not camera_ok:
-            print("[STREAM] No camera/video — serving offline frame, retrying every 5s")
-            offline_jpeg = self._offline_frame()
-            self.running = True
-            while self.running:
-                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + offline_jpeg + b"\r\n"
-                await asyncio.sleep(5)
-                # Retry real camera
-                if self.open_camera():
-                    print("[STREAM] Camera reconnected — switching to live feed")
-                    camera_ok = True
-                    break
-
+        print("[STREAM] Entering main loop...")
         self.running = True
         reconnect_attempts = 0
-
         while self.running:
-            ret, frame = self.cap.read()
-            if not ret:
-                reconnect_attempts += 1
-                if reconnect_attempts > 10:
-                    self.open_camera()
-                    reconnect_attempts = 0
-                await asyncio.sleep(0.5)
-                continue
-
-            reconnect_attempts = 0
-            self.frame_count += 1
-            h, w = frame.shape[:2]
-
-            # Run pipeline every N frames
-            if self.frame_count % self._detection_interval == 0:
-                print(f"[DEBUG] Frame {self.frame_count}: Running pipeline...")
-                try:
-                    result = self.pipeline.run(frame)
-                    self._last_persons = result["persons"]
-                    self._last_env = result["env"]
-                    self._last_infra = result.get("infra", [])
-                    print(f"[DEBUG] Pipeline returned: persons={len(self._last_persons)}, env={len(self._last_env)}, infra={len(self._last_infra)}")
-                    if self._last_persons or self._last_env:
-                        print(f"[DETECT] Frame {self.frame_count}: "
-                              f"persons={len(self._last_persons)}, "
-                              f"env={len(self._last_env)}, "
-                              f"infra={len(result.get('infra', []))}")
-                except Exception as e:
-                    print(f"[ERROR] Pipeline run failed: {e}")
-                    import traceback
-                    traceback.print_exc()
-
-            zones = self.get_active_zones()
-            violation_person_indices = set()
-
-            # ── Check each person against zones + PPE ──────────────────────────
-            for i, person in enumerate(self._last_persons):
-                bcx = person["bottom_center"][0] / w
-                bcy = person["bottom_center"][1] / h
-                norm_pt = (bcx, bcy)
-
-                in_zone = False
-                triggering_zone = None
-                for zone in zones:
-                    if point_in_polygon(norm_pt, zone["vertices"]):
-                        in_zone = True
-                        triggering_zone = zone
-                        break
-
-                has_ppe_viol = bool(person.get("ppe_violations"))
-                viol_type = self._determine_violation_type(person, in_zone)
-
-                if viol_type:
-                    violation_person_indices.add(i)
-                    # Use zone or a dummy zone for PPE-only violations
-                    target_zone = triggering_zone or (zones[0] if zones else None)
-                    if target_zone:
-                        ckey = f"{target_zone['id']}_{viol_type}_{i}"
-                        if self._check_consistency(ckey, True):
-                            await self.handle_violation(
-                                frame,
-                                target_zone,
-                                person["confidence"],
-                                viol_type,
-                                [person],
-                                [],
-                            )
-                    elif has_ppe_viol:
-                        # No zones defined — still alert on PPE violation
-                        ckey = f"global_{viol_type}_{i}"
-                        if self._check_consistency(ckey, True):
-                            fake_zone = {
-                                "id": 0, "name": "General Area",
-                                "risk_level": "low", "vertices": [],
-                            }
-                            await self.handle_violation(
-                                frame, fake_zone,
-                                person["confidence"], viol_type, [person], [],
-                            )
+            try:
+                if self.simulation_frame is not None:
+                    # SIMULATION MODE: Use the static injected frame
+                    frame = self.simulation_frame.copy()
+                    ret = True
+                    # Slow down the loop slightly for simulation stability
+                    await asyncio.sleep(0.05)
                 else:
-                    # Clear consistency counters for this person
+                    # LIVE MODE: read from camera
+                    ret, frame = self.cap.read()
+                    
+                if not ret:
+                    reconnect_attempts += 1
+                    if reconnect_attempts > 5:
+                        self.open_camera()
+                        reconnect_attempts = 0
+                    await asyncio.sleep(0.5)
+                    continue
+
+                reconnect_attempts = 0
+                self.frame_count += 1
+                h, w = frame.shape[:2]
+
+                # Get active zones
+                zones = self.get_active_zones()
+
+                # Run detection on every Nth frame
+                if self.frame_count % 5 == 0:
+                    try:
+                        from face_manager import face_manager
+                        from ocr_engine import ocr_engine
+                        
+                        # Phase 1: YOLO Detect (People & Hazards)
+                        self._last_persons, self._last_hazards = self.detector.detect_base(frame)
+                        
+                        # Phase 2: Multi-OCR Scan (Always run this now)
+                        all_found_codes = ocr_engine.read_all_codes_multi(frame)
+                        matched_codes = set()
+
+                        if self._last_persons:
+                            # Phase 3: PPE & Face for detected people
+                            self._last_persons = self.detector.detect_ppe_full_frame(frame, self._last_persons)
+                            person_bboxes = [p["bbox"] for p in self._last_persons]
+                            face_results = face_manager.recognize_faces(frame, person_bboxes)
+                            
+                            for i, det in enumerate(self._last_persons):
+                                det["face_name"] = "Unknown"
+                                det["ocr_code"] = None
+                                if i < len(face_results):
+                                    det["face_name"] = face_results[i].get("name", "Unknown")
+                                
+                                # Find matching OCR from full-frame results for this person
+                                px1, py1, px2, py2 = det["bbox"]
+                                for code_entry in all_found_codes:
+                                    cx1, cy1, cx2, cy2 = code_entry["bbox"]
+                                    # If OCR center is inside person box
+                                    if px1 <= (cx1+cx2)/2 <= px2 and py1 <= (cy1+cy2)/2 <= py2:
+                                        det["ocr_code"] = code_entry["code"]
+                                        matched_codes.add(code_entry["code"])
+                                        break
+                                
+                                # SMART FALLBACK: lookup name from code
+                                if det["face_name"] == "Unknown" and det["ocr_code"]:
+                                    for p in face_manager._registered:
+                                        if p.get("code") == det["ocr_code"]:
+                                            det["face_name"] = p["name"]
+                                            break
+
+                        # Phase 4: Create Virtual Persons for unmatched OCR codes
+                        for code_entry in all_found_codes:
+                            if code_entry["code"] not in matched_codes:
+                                v_name = "Unknown"
+                                for p in face_manager._registered:
+                                    if p.get("code") == code_entry["code"]:
+                                        v_name = p["name"]
+                                        break
+                                
+                                self._last_persons.append({
+                                    "bbox": code_entry["bbox"],
+                                    "label": "person", 
+                                    "confidence": code_entry["confidence"],
+                                    "face_name": v_name,
+                                    "ocr_code": code_entry["code"],
+                                    "ppe_result": {}
+                                })
+                                matched_codes.add(code_entry["code"])
+
+                    except Exception as e:
+                        print(f"[STREAM] Detection error: {e}")
+
+                # Check violations
+                violations = set()
+                
+                # Dynamic Hazards
+                for haz in self._last_hazards:
+                    hx1, hy1, hx2, hy2 = haz["bbox"]
+                    for i, det in enumerate(self._last_persons):
+                        x1, y1, x2, y2 = det["bbox"]
+                        px, py = (x1 + x2) / 2, (y1 + y2) / 2
+                        if hx1 <= px <= hx2 and hy1 <= py <= hy2:
+                            violations.add(i)
+                            hazard_zone = {"id": 999, "name": f"Area Berbahaya ({haz['label']})", "risk_level": "high"}
+                            asyncio.create_task(self.handle_violation(frame.copy(), hazard_zone, det["confidence"], 
+                                                       person_name=det.get("face_name"), 
+                                                       uniform_code=det.get("ocr_code")))
+
+                # Static Zones
+                for i, det in enumerate(self._last_persons):
+                    x1, y1, x2, y2 = det["bbox"]
+                    head_p = [(x1 + x2) / 2 / w, (y1 + (y2-y1)*0.2) / h]
+                    chest_p = [(x1 + x2) / 2 / w, (y1 + y2) / 2 / h]
+                    feet_p = [(x1 + x2) / 2 / w, (y2 - 2) / h]
+                    
                     for z in zones:
-                        for vt in ["restricted_area", "missing_ppe", "no_harness", "multiple"]:
-                            ckey = f"{z['id']}_{vt}_{i}"
-                            self._consistency_counters.pop(ckey, None)
+                        is_inside = False
+                        from polygon import point_in_polygon
+                        if point_in_polygon(head_p, z["vertices"]) or point_in_polygon(chest_p, z["vertices"]) or point_in_polygon(feet_p, z["vertices"]):
+                            is_inside = True
+                        
+                        if is_inside:
+                            violations.add(i)
+                            zone_info = {"id": z["id"], "name": z["name"], "risk_level": z["risk_level"]}
+                            asyncio.create_task(self.handle_violation(frame.copy(), zone_info, det["confidence"], 
+                                                       person_name=det.get("face_name"), 
+                                                       uniform_code=det.get("ocr_code")))
 
-            # ── Check environment detections (fire/smoke) ──────────────────────
-            if self._last_env and zones:
-                ckey_env = "env_fire_smoke"
-                if self._check_consistency(ckey_env, True):
-                    await self.handle_violation(
-                        frame,
-                        zones[0],
-                        max(d["confidence"] for d in self._last_env),
-                        "fire_smoke",
-                        [],
-                        self._last_env,
-                    )
-            else:
-                self._consistency_counters.pop("env_fire_smoke", None)
+                # Draw Visuals
+                self.draw_zones(frame, zones)
+                self.draw_detections(frame, self._last_persons, violations, self._last_hazards)
+                
+                # Final Encoding
+                _, jpeg = cv2.imencode('.jpg', frame)
+                self.frame = jpeg.tobytes()
+                await asyncio.sleep(0.01)
 
-            # ── Draw ──────────────────────────────────────────────────────────
-            self.draw_zones(frame, zones)
-            self.draw_infra(frame, self._last_infra)
-            self.draw_env(frame, self._last_env)
-            self.draw_persons(frame, self._last_persons, violation_person_indices)
-
-            # Watermark
-            cv2.putText(frame, "SIEWS+ 5.0", (10, 25),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1, cv2.LINE_AA)
-            ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-            cv2.putText(frame, ts, (10, h - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1, cv2.LINE_AA)
-
-            _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
-            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg.tobytes() + b"\r\n"
-
-            await asyncio.sleep(0.033)
+            except Exception as e:
+                print(f"[STREAM] Main Loop Critical Error: {e}")
+                await asyncio.sleep(1)
+        
+        self.cap.release()
 
 
 # Singleton

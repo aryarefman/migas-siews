@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
 
 interface ZoneData {
   id: number;
@@ -183,9 +183,9 @@ export default function VideoCanvas({
   return (
     <div
       ref={containerRef}
-      className={`relative h-full w-full rounded-xl overflow-hidden border-2 transition-all duration-300 flex flex-col bg-black ${alertFlash
-        ? "border-red-500 shadow-lg shadow-red-500/30"
-        : "border-industrial-700/50"
+      className={`relative h-full w-full rounded-xl overflow-hidden transition-all duration-500 flex flex-col bg-[#020408] ${alertFlash
+        ? "ring-2 ring-red-500/60 shadow-[0_0_40px_rgba(239,68,68,0.15)]"
+        : ""
         }`}
     >
       {/* MJPEG Server Feed */}
@@ -196,14 +196,13 @@ export default function VideoCanvas({
         className="w-full h-full block object-contain"
         onLoad={updateCanvasSize}
         onError={handleImgError}
-        style={{ background: "#000" }}
+        style={{ background: "#020408" }}
       />
 
       {/* Interactive Canvas Overlay */}
       <canvas
         ref={canvasRef}
-        className={`absolute top-0 left-0 w-full h-full ${drawingMode ? "cursor-crosshair" : "pointer-events-none"
-          }`}
+        className={`absolute top-0 left-0 w-full h-full ${drawingMode ? "cursor-crosshair" : "pointer-events-none"}`}
         onClick={handleCanvasClick}
         onDoubleClick={handleCanvasDoubleClick}
         onMouseMove={handleMouseMove}
@@ -211,32 +210,37 @@ export default function VideoCanvas({
 
       {/* Camera Offline Overlay */}
       {!cameraOnline && (
-        <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center">
-          <svg className="w-12 h-12 text-red-600 mb-4" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z" />
-          </svg>
-          <p className="text-[10px] text-red-500 font-black uppercase tracking-[0.3em]">CAMERA FEED OFFLINE</p>
-          <p className="text-industrial-500 text-[9px] font-bold uppercase mt-2">
-            Attempting to Reestablish Connection...
+        <div className="absolute inset-0 bg-[#020408]/95 backdrop-blur-sm flex flex-col items-center justify-center">
+          <div className="w-16 h-16 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center mb-5">
+            <svg className="w-8 h-8 text-red-400" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z" />
+            </svg>
+          </div>
+          <p className="text-xs text-red-400 font-bold uppercase tracking-[0.2em]">Camera Feed Offline</p>
+          <p className="text-industrial-500 text-[10px] font-semibold mt-1.5">
+            Attempting to reconnect...
           </p>
-          <div className="mt-6 w-6 h-6 border-2 border-red-950 border-t-red-500 rounded-full animate-spin" />
+          <div className="mt-5 w-5 h-5 border-2 border-[#162033] border-t-red-400 rounded-full animate-spin" />
         </div>
       )}
 
       {/* Drawing Mode Indicator */}
       {drawingMode && (
-        <div className="absolute top-3 left-3 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-cyan-500/20 border border-cyan-500/40 backdrop-blur-sm">
+        <div className="absolute top-3 left-3 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/25 backdrop-blur-md">
           <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-          <span className="text-cyan-400 text-xs font-medium">
-            DRAWING MODE — Click to place vertices, double-click to close
+          <span className="text-cyan-400 text-[10px] font-semibold tracking-wide">
+            Drawing — Click to place, double-click to close
           </span>
         </div>
       )}
 
       {/* Live indicator */}
-      <div className="absolute top-3 right-3 flex items-center gap-2 px-2.5 py-1 rounded-md bg-black/60 backdrop-blur-sm">
-        <div className={`w-2 h-2 rounded-full ${cameraOnline ? "bg-red-500 animate-pulse" : "bg-gray-600"}`} />
-        <span className="text-white text-xs font-medium tracking-wider">
+      <div className="absolute top-3 right-3 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-black/50 backdrop-blur-md border border-white/5">
+        <div className="relative">
+          <div className={`w-2 h-2 rounded-full ${cameraOnline ? "bg-red-500" : "bg-industrial-600"}`} />
+          {cameraOnline && <div className="absolute inset-0 w-2 h-2 rounded-full bg-red-500 animate-ping opacity-75" />}
+        </div>
+        <span className="text-white text-[10px] font-semibold tracking-wider">
           {cameraOnline ? "LIVE" : "OFF"}
         </span>
       </div>

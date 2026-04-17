@@ -92,24 +92,20 @@ class VideoProcessor:
                         {
                             "bbox": p["bbox"],
                             "confidence": round(p["confidence"], 3),
-                            "ppe_violations": p.get("ppe_violations", []),
-                            "ppe": {
-                                k: round(v["confidence"], 3)
-                                for k, v in p.get("ppe", {}).items()
-                            },
+                            "ppe": p.get("ppe_result", {}),
                         }
                         for p in result["persons"]
                     ],
                     "env": [
                         {
-                            "class_name": d["class_name"],
+                            "label": d.get("label", "Hazard"),
                             "confidence": round(d["confidence"], 3),
                             "bbox": d["bbox"],
                         }
                         for d in result["env"]
                     ],
                     "has_violation": (
-                        any(p.get("ppe_violations") for p in result["persons"])
+                        any(not p.get("ppe_result", {}).get("has_helmet") or not p.get("ppe_result", {}).get("has_vest") for p in result["persons"])
                         or bool(result["env"])
                     ),
                 }

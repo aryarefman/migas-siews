@@ -21,6 +21,8 @@ async def send_whatsapp(
     facility_name: str,
     fonnte_token: str,
     snapshot_url: Optional[str] = None,
+    person_name: Optional[str] = None,
+    uniform_code: Optional[str] = None,
 ) -> dict:
     """
     Send WhatsApp alert via Fonnte API.
@@ -28,10 +30,17 @@ async def send_whatsapp(
     """
     now_wib = datetime.now(WIB).strftime("%d/%m/%Y %H:%M:%S WIB")
 
+    ident_str = ""
+    if person_name and person_name != "Unknown":
+        ident_str = f"Personel  : {person_name}\n"
+    elif uniform_code:
+        ident_str = f"ID Seragam: {uniform_code}\n"
+
     message = (
-        f"🚨 SIEWS+ ALERT — ZONA TERLARANG DILANGGAR\n\n"
+        f"🚨 SIEWS+ ALERT — PELANGGARAN ZONA\n\n"
         f"Fasilitas : {facility_name}\n"
         f"Zona      : {zone_name}\n"
+        f"{ident_str}"
         f"Risiko    : {risk_level.upper()}\n"
         f"Waktu     : {now_wib}\n"
         f"Confidence: {confidence:.0%}\n"
@@ -45,9 +54,16 @@ async def send_whatsapp(
         return {"status": "skipped", "reason": "no_token"}
 
     headers = {"Authorization": fonnte_token}
+    # Fonnte requires URL to start with http(s). If it's a local path, skip it for the API call 
+    # but keep the message text.
+    valid_url = ""
+    if snapshot_url and snapshot_url.startswith("http"):
+        valid_url = snapshot_url
+
     data = {
         "target": phone,
         "message": message,
+        "url": valid_url,
         "countryCode": "62",
     }
 
@@ -70,6 +86,9 @@ async def send_to_all_recipients(
     shutdown_triggered: bool,
     facility_name: str,
     fonnte_token: str,
+    snapshot_url: Optional[str] = None,
+    person_name: Optional[str] = None,
+    uniform_code: Optional[str] = None,
 ):
     """
     Send WhatsApp to all recipients (comma-separated string).
@@ -80,7 +99,11 @@ async def send_to_all_recipients(
 
     phones = [p.strip() for p in recipients_str.split(",") if p.strip()]
     tasks = [
-        send_whatsapp(phone, zone_name, risk_level, confidence, shutdown_triggered, facility_name, fonnte_token)
+        send_whatsapp(
+            phone, zone_name, risk_level, confidence, shutdown_triggered, 
+            facility_name, fonnte_token, snapshot_url=snapshot_url,
+            person_name=person_name, uniform_code=uniform_code
+        )
         for phone in phones
     ]
     return await asyncio.gather(*tasks)

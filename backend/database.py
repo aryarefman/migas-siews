@@ -28,6 +28,8 @@ def _migrate_alert_columns():
         "ALTER TABLE alerts ADD COLUMN false_positive BOOLEAN DEFAULT 0",
         "ALTER TABLE alerts ADD COLUMN ppe_detail TEXT",
         "ALTER TABLE alerts ADD COLUMN persons_count INTEGER DEFAULT 0",
+        "ALTER TABLE alerts ADD COLUMN person_name VARCHAR(100)",
+        "ALTER TABLE alerts ADD COLUMN uniform_code VARCHAR(50)",
     ]
     with engine.connect() as conn:
         for stmt in migrations:

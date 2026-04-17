@@ -22,7 +22,7 @@ export default function RootLayout({
       </head>
       <body className="min-h-screen bg-[#0a0e17] text-slate-200 antialiased">
         <Navbar />
-        <main className="pt-16">{children}</main>
+        <main className="pt-[72px]">{children}</main>
       </body>
     </html>
   );

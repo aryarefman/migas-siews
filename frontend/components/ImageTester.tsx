@@ -9,6 +9,11 @@ export default function ImageTester() {
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Video states
+  const [uploadingVideo, setUploadingVideo] = useState(false);
+  const [videoInfo, setVideoInfo] = useState<any>(null);
+  const [videoError, setVideoError] = useState<string | null>(null);
+
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -56,6 +61,7 @@ export default function ImageTester() {
   const stopSimulation = async () => {
     try {
       await fetch(`${API_URL}/stream/reset`, { method: "POST" });
+      setVideoInfo(null);
       alert("SYST: Resuming live camera monitor.");
       window.location.reload();
     } catch (err) {
@@ -63,9 +69,47 @@ export default function ImageTester() {
     }
   };
 
+  // ─── Video Upload Handler ───
+  const handleVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploadingVideo(true);
+    setVideoError(null);
+    setVideoInfo(null);
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const res = await fetch(`${API_URL}/stream/simulate-video`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setVideoInfo({
+          filename: data.filename,
+          duration: data.duration_seconds,
+          fps: data.fps,
+          totalFrames: data.total_frames,
+        });
+      } else {
+        const err = await res.json();
+        setVideoError(err.detail || "Gagal mengunggah video.");
+      }
+    } catch (err) {
+      setVideoError("Koneksi ke backend terputus.");
+      console.error(err);
+    } finally {
+      setUploadingVideo(false);
+    }
+  };
+
   return (
     <div className="p-4 border-t border-[#162033]">
-      {/* Section Header */}
+      {/* ═══════════ PHOTO SECTION ═══════════ */}
       <h3 className="text-[10px] font-bold text-industrial-400 uppercase tracking-[0.15em] mb-3 flex items-center gap-2">
         <div className="w-5 h-5 rounded bg-blue-500/10 border border-blue-500/20 flex items-center justify-center">
           <svg className="w-3 h-3 text-blue-400" fill="currentColor" viewBox="0 0 24 24">
@@ -146,6 +190,69 @@ export default function ImageTester() {
             </div>
           </div>
         )}
+      </div>
+
+      {/* ═══════════ VIDEO SECTION ═══════════ */}
+      <div className="mt-5 pt-4 border-t border-[#162033]">
+        <h3 className="text-[10px] font-bold text-industrial-400 uppercase tracking-[0.15em] mb-3 flex items-center gap-2">
+          <div className="w-5 h-5 rounded bg-purple-500/10 border border-purple-500/20 flex items-center justify-center">
+            <svg className="w-3 h-3 text-purple-400" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/>
+            </svg>
+          </div>
+          Video Stream Lab
+        </h3>
+
+        <div className="space-y-3">
+          {/* Active Video Info */}
+          {videoInfo && (
+            <div className="animate-fade-in p-3 rounded-lg bg-purple-500/8 border border-purple-500/20">
+              <div className="flex items-center gap-2 mb-2">
+                <div className="w-2 h-2 rounded-full bg-purple-400 animate-pulse" />
+                <p className="text-[10px] font-bold text-purple-300 uppercase tracking-wider">Video Playing</p>
+              </div>
+              <p className="text-[11px] font-semibold text-white truncate mb-1">{videoInfo.filename}</p>
+              <div className="flex gap-3 text-[9px] font-mono text-industrial-500">
+                <span>{videoInfo.duration.toFixed(1)}s</span>
+                <span>{videoInfo.fps} FPS</span>
+                <span>{videoInfo.totalFrames} frames</span>
+              </div>
+              <button
+                onClick={stopSimulation}
+                className="mt-2 w-full py-1.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-[9px] font-bold uppercase tracking-wider hover:bg-red-500/20 transition-all flex items-center justify-center gap-1.5"
+              >
+                <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>
+                Stop & Resume Live
+              </button>
+            </div>
+          )}
+
+          {/* Video Upload */}
+          {!uploadingVideo ? (
+            <label className="block w-full text-center py-4 rounded-lg border-2 border-dashed border-[#1c2a42] hover:border-purple-500/30 hover:bg-purple-500/5 transition-all cursor-pointer group">
+              <input type="file" className="hidden" accept="video/mp4,video/avi,video/x-matroska,video/quicktime,video/webm,.mp4,.avi,.mkv,.mov,.webm" onChange={handleVideoUpload} />
+              <svg className="w-5 h-5 text-industrial-600 group-hover:text-purple-400 mx-auto mb-2 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
+              <p className="text-[10px] font-semibold text-industrial-500 uppercase tracking-widest group-hover:text-purple-400 transition-colors">Upload Video to Stream</p>
+              <p className="text-[8px] text-industrial-600 mt-1">MP4, AVI, MKV, MOV, WEBM</p>
+            </label>
+          ) : (
+            <div className="py-5 text-center rounded-lg border border-purple-500/20 bg-[#070d18]">
+              <div className="w-5 h-5 border-2 border-purple-400 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+              <p className="text-[10px] font-semibold text-purple-400 animate-pulse uppercase tracking-widest">Uploading Video...</p>
+            </div>
+          )}
+
+          {videoError && (
+            <div className="p-3 bg-red-500/8 border border-red-500/20 rounded-lg animate-fade-in">
+              <p className="text-[10px] font-semibold text-red-400 flex items-center gap-2">
+                <svg className="w-3.5 h-3.5 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+                {videoError}
+              </p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

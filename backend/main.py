@@ -169,13 +169,68 @@ async def start_simulation(file: UploadFile = File(...)):
     if frame is None:
         raise HTTPException(status_code=400, detail="Gagal membaca gambar")
     
+    # Clear video simulation if active
+    if stream_manager.simulation_cap is not None:
+        stream_manager.simulation_cap.release()
+        stream_manager.simulation_cap = None
+
     stream_manager.simulation_frame = frame
     return {"status": "simulation_active", "message": "Gambar telah disuntikkan ke stream live"}
 
+@app.post("/stream/simulate-video")
+async def start_video_simulation(file: UploadFile = File(...)):
+    """Upload a video file to replace the live stream with AI-processed video playback."""
+    allowed = {".mp4", ".avi", ".mkv", ".mov", ".webm"}
+    ext = os.path.splitext(file.filename or "video.mp4")[1].lower()
+    if ext not in allowed:
+        raise HTTPException(status_code=400, detail=f"Format tidak didukung: {ext}. Gunakan mp4/avi/mkv/mov/webm.")
+
+    # Save video to temp file
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    video_dir = os.path.join(STATIC_DIR, "videos")
+    os.makedirs(video_dir, exist_ok=True)
+    video_path = os.path.join(video_dir, f"sim_{ts}{ext}")
+
+    # Stream write (chunked) for fast upload
+    with open(video_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    # Open with OpenCV
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        os.remove(video_path)
+        raise HTTPException(status_code=400, detail="Gagal membuka video. File mungkin rusak.")
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25
+    duration = total_frames / fps if fps > 0 else 0
+
+    # Clear any image simulation
+    stream_manager.simulation_frame = None
+    # Release old video simulation if exists
+    if stream_manager.simulation_cap is not None:
+        stream_manager.simulation_cap.release()
+
+    stream_manager.simulation_cap = cap
+    print(f"[STREAM] Video simulation started: {file.filename} ({total_frames} frames, {duration:.1f}s)")
+
+    return {
+        "status": "video_simulation_active",
+        "message": f"Video '{file.filename}' sedang diputar di live stream",
+        "filename": file.filename,
+        "total_frames": total_frames,
+        "fps": round(fps, 1),
+        "duration_seconds": round(duration, 1),
+    }
+
 @app.post("/stream/reset")
 async def reset_stream():
-    """Stop simulation and return to live camera feed."""
+    """Stop all simulations and return to live camera feed."""
     stream_manager.simulation_frame = None
+    if stream_manager.simulation_cap is not None:
+        stream_manager.simulation_cap.release()
+        stream_manager.simulation_cap = None
+        print("[STREAM] Video simulation stopped")
     stream_manager.open_camera()
     return {"status": "live_active", "message": "Kembali ke kamera live"}
 

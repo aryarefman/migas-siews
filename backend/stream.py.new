@@ -1,0 +1,95 @@
+        while self.running:
+            try:
+                ret, frame = self.cap.read()
+                if not ret:
+                    reconnect_attempts += 1
+                    if reconnect_attempts > 5:
+                        self.open_camera()
+                        reconnect_attempts = 0
+                    await asyncio.sleep(0.5)
+                    continue
+
+                reconnect_attempts = 0
+                self.frame_count += 1
+                h, w = frame.shape[:2]
+
+                # Get active zones
+                zones = self.get_active_zones()
+
+                # Run detection on every Nth frame
+                if self.frame_count % 5 == 0:
+                    try:
+                        from face_manager import face_manager
+                        from ocr_engine import ocr_engine
+                        
+                        # Stage 1: Detect base
+                        self._last_persons, self._last_hazards = self.detector.detect_base(frame)
+                        
+                        if self._last_persons:
+                            # Stage 2: PPE
+                            self._last_persons = self.detector.detect_ppe_full_frame(frame, self._last_persons)
+                            
+                            person_bboxes = [p["bbox"] for p in self._last_persons]
+                            # Stage 3: Face
+                            face_results = face_manager.recognize_faces(frame, person_bboxes)
+                            # Stage 4: OCR
+                            ocr_results = ocr_engine.read_all_codes(frame, person_bboxes)
+                            
+                            for i, det in enumerate(self._last_persons):
+                                det["face_name"] = "Unknown"
+                                det["ocr_code"] = None
+                                if i < len(face_results):
+                                    det["face_name"] = face_results[i].get("name", "Unknown")
+                                if i < len(ocr_results) and ocr_results[i]:
+                                    det["ocr_code"] = ocr_results[i].get("code")
+                    except Exception as e:
+                        print(f"[STREAM] Detection error: {e}")
+
+                # Check violations
+                violations = set()
+                
+                # Dynamic Hazards
+                for haz in self._last_hazards:
+                    hx1, hy1, hx2, hy2 = haz["bbox"]
+                    for i, det in enumerate(self._last_persons):
+                        x1, y1, x2, y2 = det["bbox"]
+                        px, py = (x1 + x2) / 2, (y1 + y2) / 2
+                        if hx1 <= px <= hx2 and hy1 <= py <= hy2:
+                            violations.add(i)
+                            hazard_zone = {"id": 999, "name": f"Area Berbahaya ({haz['label']})", "risk_level": "high"}
+                            await self.handle_violation(frame, hazard_zone, det["confidence"], 
+                                                       person_name=det.get("face_name"), 
+                                                       uniform_code=det.get("ocr_code"))
+
+                # Static Zones
+                for i, det in enumerate(self._last_persons):
+                    x1, y1, x2, y2 = det["bbox"]
+                    head_p = [(x1 + x2) / 2 / w, (y1 + (y2-y1)*0.2) / h]
+                    chest_p = [(x1 + x2) / 2 / w, (y1 + y2) / 2 / h]
+                    feet_p = [(x1 + x2) / 2 / w, (y2 - 2) / h]
+                    
+                    for z in zones:
+                        is_inside = False
+                        from polygon import point_in_polygon
+                        if point_in_polygon(head_p, z["vertices"]) or point_in_polygon(chest_p, z["vertices"]) or point_in_polygon(feet_p, z["vertices"]):
+                            is_inside = True
+                        
+                        if is_inside:
+                            violations.add(i)
+                            zone_info = {"id": z["id"], "name": z["name"], "risk_level": z["risk_level"]}
+                            await self.handle_violation(frame, zone_info, det["confidence"], 
+                                                       person_name=det.get("face_name"), 
+                                                       uniform_code=det.get("ocr_code"))
+
+                # Draw Visuals
+                self.draw_zones(frame, zones)
+                self.draw_detections(frame, self._last_persons, violations, self._last_hazards)
+                
+                # Final Encoding
+                _, jpeg = cv2.imencode('.jpg', frame)
+                self.frame = jpeg.tobytes()
+                await asyncio.sleep(0.01)
+
+            except Exception as e:
+                print(f"[STREAM] Main Loop Critical Error: {e}")
+                await asyncio.sleep(1)

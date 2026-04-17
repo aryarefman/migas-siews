@@ -41,6 +41,8 @@ class StreamManager:
         self._notify_cooldown = 300
         self.frame = None  # Storage for the current JPEG frame
         self.simulation_frame: Optional[np.ndarray] = None  # For test simulation
+        self.simulation_cap: Optional[cv2.VideoCapture] = None  # For video simulation
+        self.simulation_path: Optional[str] = None
 
     def load_settings(self):
         """Load settings from database."""
@@ -388,11 +390,18 @@ class StreamManager:
         while self.running:
             try:
                 if self.simulation_frame is not None:
-                    # SIMULATION MODE: Use the static injected frame
+                    # STATIC SIMULATION: Use the static injected frame
                     frame = self.simulation_frame.copy()
                     ret = True
-                    # Slow down the loop slightly for simulation stability
                     await asyncio.sleep(0.05)
+                elif self.simulation_cap is not None:
+                    # VIDEO SIMULATION: Read from video file
+                    ret, frame = self.simulation_cap.read()
+                    if not ret:
+                        # Loop video
+                        self.simulation_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        ret, frame = self.simulation_cap.read()
+                    await asyncio.sleep(0.02) # Control playback speed
                 else:
                     # LIVE MODE: read from camera
                     ret, frame = self.cap.read()

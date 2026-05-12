@@ -2,11 +2,15 @@
 node_modules/
 backend/venv/
 backend/__pycache__/
+__pycache__/
 *.pyc
 
 # Database & Storage
 backend/siews.db
+siews.db
+backend-go/siews.db
 backend/static/snapshots/
+backend/static/uploads/
 .env
 .env.local
 
@@ -18,3 +22,29 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+
+# Datasets and training outputs
+D-fire/
+D-fire.zip
+data_fire_smoke/
+data_fire_smoke.zip
+Gas_Sensors_Measurements.csv
+dataset/
+training/runs*/
+
+# Model weights and generated model artifacts
+*.pt
+*.onnx
+*.engine
+backend/Model/
+backend/models/
+backend/models copy/
+model/
+backup/
+
+# Built binaries
+*.exe
+*.exe~
+*~
+backend-go/server
+backend-go/siews-backend

@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
 
 interface VideoJob {
   id: number;
@@ -11,6 +11,7 @@ interface VideoJob {
   progress: number;
   total_frames: number;
   processed_frames: number;
+  annotated_video_path?: string;
   created_at: string;
   completed_at: string | null;
   error_message?: string;
@@ -39,6 +40,7 @@ interface VideoResult {
   total_frames_processed: number;
   total_violation_frames: number;
   frames: FrameDetection[];
+  annotated_video_path?: string;
 }
 
 const STATUS_COLOR: Record<string, string> = {
@@ -176,8 +178,8 @@ export default function VideoAnalysisPage() {
           {/* Drop Zone */}
           <div
             className={`border-2 border-dashed p-8 text-center cursor-pointer transition-all ${dragOver
-                ? "border-amber-500 bg-amber-950/20"
-                : "border-industrial-700 hover:border-industrial-600"
+              ? "border-amber-500 bg-amber-950/20"
+              : "border-industrial-700 hover:border-industrial-600"
               } ${uploading ? "opacity-50 pointer-events-none" : ""}`}
             onClick={() => fileRef.current?.click()}
             onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
@@ -307,6 +309,20 @@ export default function VideoAnalysisPage() {
             </div>
           ) : result ? (
             <>
+              {/* Annotated Video Player */}
+              {result.annotated_video_path && (
+                <div className="p-4 border-b border-industrial-800 shrink-0">
+                  <h2 className="text-[10px] font-black text-white uppercase tracking-widest mb-3">
+                    Annotated Video
+                  </h2>
+                  <video
+                    controls
+                    className="w-full max-h-[400px] bg-black rounded"
+                    src={`${API_URL}/video/annotated/${result.job_id}`}
+                  />
+                </div>
+              )}
+
               {/* Result Header */}
               <div className="p-4 border-b border-industrial-800 shrink-0">
                 <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -337,8 +353,8 @@ export default function VideoAnalysisPage() {
                     <button
                       onClick={() => setFilterViolations(!filterViolations)}
                       className={`px-3 py-1.5 text-[9px] font-black uppercase tracking-wider border transition-all ${filterViolations
-                          ? "bg-red-600 border-red-500 text-white"
-                          : "bg-industrial-800 border-industrial-700 text-industrial-400"
+                        ? "bg-red-600 border-red-500 text-white"
+                        : "bg-industrial-800 border-industrial-700 text-industrial-400"
                         }`}
                     >
                       {filterViolations ? "All Frames" : "Violations Only"}
@@ -364,8 +380,8 @@ export default function VideoAnalysisPage() {
                     <div
                       key={frame.frame}
                       className={`p-3 border transition-all ${frame.has_violation
-                          ? "border-red-800 bg-red-950/10"
-                          : "border-industrial-800 bg-industrial-950/30"
+                        ? "border-red-800 bg-red-950/10"
+                        : "border-industrial-800 bg-industrial-950/30"
                         }`}
                     >
                       <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -385,9 +401,9 @@ export default function VideoAnalysisPage() {
                                   {frame.persons.length} person{frame.persons.length > 1 ? "s" : ""}
                                 </span>
                               )}
-                              {frame.persons.flatMap((p) => p.ppe_violations).map((v, i) => (
+                              {frame.persons.flatMap((p) => p.ppe_violations || []).map((v, i) => (
                                 <span key={i} className="text-[9px] font-bold text-red-400 uppercase">
-                                  {v.replace("_", " ")}
+                                  {typeof v === 'string' ? v.replace("_", " ") : String(v)}
                                 </span>
                               ))}
                               {frame.env.map((d, i) => (
@@ -405,8 +421,8 @@ export default function VideoAnalysisPage() {
                                 <span
                                   key={cls}
                                   className={`px-1.5 py-0.5 text-[8px] font-bold uppercase border ${cls.startsWith("no_")
-                                      ? "border-red-800 text-red-400"
-                                      : "border-emerald-900 text-emerald-500"
+                                    ? "border-red-800 text-red-400"
+                                    : "border-emerald-900 text-emerald-500"
                                     }`}
                                 >
                                   {cls.replace("_", " ")} {((conf as number) * 100).toFixed(0)}%

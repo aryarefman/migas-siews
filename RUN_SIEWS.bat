@@ -7,24 +7,21 @@ echo   SIEWS+ 5.0 - INTEGRATED SAFETY MONITORING SYSTEM
 echo ============================================================
 echo.
 
-:: 1. Start AI Servant (Python)
-echo [1/3] Starting AI DETECTOR (Python Port 8003)...
-start "SIEWS+ AI DETECTOR" cmd /k "cd /d %~dp0backend && python ai_service.py"
+:: 1. Start Python Backend (FastAPI)
+echo [1/2] Starting PYTHON BACKEND (Port 8001)...
+start "SIEWS+ PYTHON BACKEND" cmd /k "cd /d %~dp0backend && python main.py"
 
-:: 2. Wait a bit for AI to load models
-timeout /t 5 /nobreak > nul
+:: 2. Wait for backend to initialize
+timeout /t 8 /nobreak > nul
 
-:: 3. Start Master Backend (Golang)
-echo [2/3] Starting MASTER BACKEND (Golang Port 8001)...
-start "SIEWS+ MASTER BACKEND" cmd /k "cd /d %~dp0backend\golang_polygon && go run main.go"
-
-:: 4. Start Frontend (Next.js)
-echo [3/3] Starting DASHBOARD FRONTEND (Next.js Port 3000)...
+:: 3. Start Frontend (Next.js)
+echo [2/2] Starting DASHBOARD FRONTEND (Port 3000)...
 start "SIEWS+ DASHBOARD" cmd /k "cd /d %~dp0frontend && npm run dev"
 
 echo.
 echo ============================================================
 echo ALL SERVICES STARTED!
-echo Monitoring: http://localhost:3000
+echo Backend API:  http://localhost:8001
+echo Dashboard:    http://localhost:3000
 echo ============================================================
 pause

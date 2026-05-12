@@ -15,7 +15,7 @@ import numpy as np
 from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -27,6 +27,13 @@ from shutdown import trigger_relay, log_shutdown
 from config import STATIC_DIR
 from video_processor import video_processor, UPLOADS_DIR
 from face_manager import face_manager
+from drawing import (
+    draw_detections,
+    draw_env_hazards,
+    draw_persons,
+    draw_road_damage,
+    draw_safety_cones,
+)
 
 # ─── App Setup ────────────────────────────────────────────────
 app = FastAPI(
@@ -57,6 +64,18 @@ async def startup():
     from ocr_engine import ocr_engine
     ocr_engine._init_reader()
     print("🚀 SIEWS+ 5.0 Backend started & AI Engine Running")
+
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint."""
+    from stream import stream_manager
+    return {
+        "status": "ok",
+        "models_loaded": stream_manager.detector is not None,
+        "pipeline_loaded": stream_manager.pipeline is not None,
+        "camera_status": "offline"
+    }
 
 
 # ─── Quick Image Analysis (Testing) ──────────────────────────
@@ -128,7 +147,7 @@ async def analyze_uploaded_image(file: UploadFile = File(...), db: Session = Dep
 
         # 3. Draw Results for Feedback
         annotated = frame.copy()
-        stream_manager.draw_detections(annotated, persons, set(), hazards)
+        draw_detections(annotated, persons, set(), hazards)
         
         # 4. Encode result image to base64
         _, buffer = cv2.imencode(".jpg", annotated)
@@ -487,7 +506,7 @@ def _run_pipeline_sync(frame: np.ndarray):
         result = stream_manager.pipeline.run(frame)
         stream_manager._last_persons = result["persons"]
         stream_manager._last_hazards = result.get("env", [])
-        stream_manager.draw_persons(frame, result["persons"])
+        draw_persons(frame, result["persons"], set())
     except Exception as e:
         print(f"[WS-CAMERA] Pipeline error: {e}")
 
@@ -620,11 +639,37 @@ def list_video_jobs(db: Session = Depends(get_db)):
             "progress": j.progress,
             "total_frames": j.total_frames,
             "processed_frames": j.processed_frames,
+            "annotated_video_path": j.annotated_video_path,
             "created_at": j.created_at.isoformat() if j.created_at else None,
             "completed_at": j.completed_at.isoformat() if j.completed_at else None,
         }
         for j in jobs
     ]
+
+
+@app.get("/video/annotated/{job_id}")
+def get_annotated_video(job_id: int, db: Session = Depends(get_db)):
+    """Serve the annotated video file for a job."""
+    job = db.query(VideoJob).filter(VideoJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Handle both forward and backslash paths (Windows/Linux compatibility)
+    video_path = job.annotated_video_path.replace("\\", "/") if job.annotated_video_path else None
+    if not video_path or (not os.path.exists(video_path) and not os.path.exists(job.annotated_video_path)):
+        raise HTTPException(status_code=404, detail="Annotated video not found")
+
+    # Get filename from path and serve from static/uploads
+    filename = os.path.basename(video_path)
+    static_path = os.path.join(STATIC_DIR, "uploads", filename)
+    if os.path.exists(static_path):
+        return FileResponse(static_path, media_type="video/mp4")
+    # Fallback: try the stored path (with both slash types)
+    if os.path.exists(video_path):
+        return FileResponse(video_path, media_type="video/mp4")
+    if os.path.exists(job.annotated_video_path):
+        return FileResponse(job.annotated_video_path, media_type="video/mp4")
+    raise HTTPException(status_code=404, detail="Annotated video file not found on disk")
 
 
 @app.get("/video/jobs/{job_id}")
@@ -640,6 +685,7 @@ def get_video_job(job_id: int, db: Session = Depends(get_db)):
         "progress": job.progress,
         "total_frames": job.total_frames,
         "processed_frames": job.processed_frames,
+        "annotated_video_path": job.annotated_video_path,
         "error_message": job.error_message,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
@@ -661,6 +707,7 @@ def get_video_result(job_id: int, db: Session = Depends(get_db)):
         "filename": job.filename,
         "total_frames_processed": job.processed_frames,
         "total_violation_frames": len(violations),
+        "annotated_video_path": job.annotated_video_path,
         "frames": result,
     }
 
@@ -698,25 +745,25 @@ async def analyze_image(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Gagal membaca gambar. Pastikan file tidak rusak.")
 
     # Ensure pipeline is ready
-    if stream_manager.pipeline is None:
-        stream_manager.load_settings()
-        stream_manager.init_pipeline()
+    if stream_manager.detector is None:
+        stream_manager.init_detector()
 
-    pipeline = stream_manager.pipeline
-    if pipeline is None:
+    detector = stream_manager.detector
+    if detector is None:
         raise HTTPException(status_code=503, detail="Pipeline belum siap. Restart backend.")
 
     # Run detection
     try:
         import asyncio
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, pipeline.run, frame.copy())
+        result = await loop.run_in_executor(None, detector.run, frame.copy())
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Detection error: {e}")
 
     persons = result.get("persons", [])
     env_detections = result.get("env", [])
     road_detections = result.get("road", [])
+    safety_cones = result.get("safety_cones", [])
 
     # violation_indices: persons that have ppe_violations (no zone check for photo analysis)
     violation_indices = {
@@ -724,9 +771,10 @@ async def analyze_image(file: UploadFile = File(...)):
     }
 
     annotated = frame.copy()
-    stream_manager.draw_persons(annotated, persons, violation_indices)
-    stream_manager.draw_env(annotated, env_detections)
-    stream_manager.draw_road(annotated, road_detections)
+    draw_persons(annotated, persons, violation_indices)
+    draw_env_hazards(annotated, env_detections)
+    draw_road_damage(annotated, road_detections)
+    draw_safety_cones(annotated, safety_cones)
 
     # Encode annotated image to base64
     import base64
@@ -739,7 +787,7 @@ async def analyze_image(file: UploadFile = File(...)):
             "bbox": p.get("bbox", []),
             "confidence": round(p.get("confidence", 0), 3),
             "violations": p.get("ppe_violations", []),
-            "ppe_status": p.get("ppe", {}),
+            "ppe_status": p.get("ppe_result", {}),
         }
         for p in persons
     ]
@@ -762,6 +810,15 @@ async def analyze_image(file: UploadFile = File(...)):
         for r in road_detections
     ]
 
+    safety_cone_list = [
+        {
+            "label": s.get("class_name", ""),
+            "confidence": round(s.get("confidence", 0), 3),
+            "bbox": s.get("bbox", []),
+        }
+        for s in safety_cones
+    ]
+
     return {
         "annotated_image": f"data:image/jpeg;base64,{img_b64}",
         "image_size": {"width": frame.shape[1], "height": frame.shape[0]},
@@ -769,9 +826,11 @@ async def analyze_image(file: UploadFile = File(...)):
             "persons": person_list,
             "env": env_list,
             "road": road_list,
+            "safety_cones": safety_cone_list,
             "total_persons": len(persons),
             "total_env": len(env_detections),
             "total_road": len(road_detections),
+            "total_safety_cones": len(safety_cones),
             "violations_found": bool(violation_indices),
         },
     }
@@ -888,6 +947,7 @@ def automated_scheduling():
         "agent": "SIEWS+ Agentic Scheduler"
     }
 
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

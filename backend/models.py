@@ -108,6 +108,7 @@ class VideoJob(Base):
     total_frames = Column(Integer, default=0)
     processed_frames = Column(Integer, default=0)
     result_json = Column(Text, nullable=True)      # JSON: list of frame detections
+    annotated_video_path = Column(String(255), nullable=True)  # Path to annotated output video
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     completed_at = Column(DateTime, nullable=True)

@@ -2,10 +2,11 @@
 
 import { useState, useCallback, useRef } from "react";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
 
 interface Detection {
   label: string;
+  class_name?: string;
   confidence: number;
   bbox: number[];
 }
@@ -14,7 +15,15 @@ interface Person {
   bbox: number[];
   confidence: number;
   violations: string[];
-  ppe_status: Record<string, number>;
+  ppe_status: {
+    has_helmet?: boolean;
+    has_vest?: boolean;
+    has_belt?: boolean;
+    helmet_conf?: number;
+    vest_conf?: number;
+    belt_conf?: number;
+    raw_labels?: string[];
+  };
 }
 
 interface AnalysisResult {
@@ -23,8 +32,10 @@ interface AnalysisResult {
   detections: {
     persons: Person[];
     env: Detection[];
+    road?: Detection[];
     total_persons: number;
     total_env: number;
+    total_road?: number;
     violations_found: boolean;
   };
 }
@@ -56,7 +67,8 @@ export default function AnalyzePage() {
       });
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.detail || "Analisis gagal");
+        const errorMsg = err.error || err.detail || err.message || JSON.stringify(err);
+        throw new Error(errorMsg);
       }
       const data: AnalysisResult = await res.json();
       setResult(data);
@@ -91,7 +103,12 @@ export default function AnalyzePage() {
 
   const violations = result?.detections.persons.flatMap((p) => p.violations) ?? [];
   const envDetections = result?.detections.env ?? [];
-  const roadDetections = (result?.detections as any)?.road ?? [];
+  const roadDetections = result?.detections.road ?? [];
+  const ppeItems = [
+    { key: "helmet", label: "Helmet", hasKey: "has_helmet", confKey: "helmet_conf" },
+    { key: "vest", label: "Vest", hasKey: "has_vest", confKey: "vest_conf" },
+    { key: "belt", label: "Belt", hasKey: "has_belt", confKey: "belt_conf" },
+  ] as const;
 
   return (
     <div className="min-h-screen bg-[#0a0e17] text-slate-200 p-6">
@@ -104,6 +121,7 @@ export default function AnalyzePage() {
           <p className="text-slate-400 text-sm mt-1">
             Upload foto untuk dianalisis oleh model aktif:{" "}
             <span className="text-green-400 font-semibold">S1 Person</span> +{" "}
+            <span className="text-amber-400 font-semibold">S2 PPE</span> +{" "}
             <span className="text-cyan-400 font-semibold">S3 Open Hole</span>
           </p>
         </div>
@@ -174,7 +192,7 @@ export default function AnalyzePage() {
                 <p className="text-sm text-slate-400">
                   {result.detections.total_persons} orang terdeteksi ·{" "}
                   {result.detections.total_env} objek konstruksi ·{" "}
-                  {(result.detections as any).total_road ?? 0} kerusakan jalan ·{" "}
+                  {result.detections.total_road ?? 0} kerusakan jalan ·{" "}
                   {result.image_size.width}×{result.image_size.height}px
                 </p>
               </div>
@@ -215,13 +233,40 @@ export default function AnalyzePage() {
                   <p className="text-slate-500 text-sm">Tidak ada orang</p>
                 ) : (
                   result.detections.persons.map((p, i) => (
-                    <div key={i} className="border border-slate-600 rounded-lg p-3 space-y-1">
+                    <div key={i} className="border border-slate-600 rounded-lg p-3 space-y-3">
                       <div className="flex items-center justify-between">
                         <span className="font-semibold text-sm">Person #{i + 1}</span>
-                        <span className="text-xs text-slate-400">
-                          conf: {(p.confidence * 100).toFixed(1)}%
+                        <span className="text-xs font-bold text-slate-300 bg-slate-700 px-2 py-0.5 rounded">
+                          {(p.confidence * 100).toFixed(0)}%
                         </span>
                       </div>
+                      <div className="space-y-1.5">
+                        {ppeItems.map((item) => {
+                          const detected = Boolean(p.ppe_status?.[item.hasKey]);
+                          const confidence = Number(p.ppe_status?.[item.confKey] ?? 0);
+
+                          return (
+                            <div
+                              key={item.key}
+                              className={`flex items-center justify-between rounded-md border px-2 py-1 text-xs ${
+                                detected
+                                  ? "border-green-500/40 bg-green-900/20 text-green-300"
+                                  : "border-red-500/40 bg-red-900/20 text-red-300"
+                              }`}
+                            >
+                              <span className="font-bold">{item.label}</span>
+                              <span className="font-mono">
+                                {detected ? `Terdeteksi ${(confidence * 100).toFixed(0)}%` : "Tidak terdeteksi"}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {p.ppe_status?.raw_labels && p.ppe_status.raw_labels.length > 0 && (
+                        <p className="text-[10px] text-slate-500">
+                          Raw PPE: {p.ppe_status.raw_labels.join(", ")}
+                        </p>
+                      )}
                       {p.violations.length > 0 && (
                         <div className="flex flex-wrap gap-1">
                           {p.violations.map((v) => (
@@ -250,51 +295,87 @@ export default function AnalyzePage() {
                 {envDetections.length === 0 ? (
                   <p className="text-slate-500 text-sm">Tidak ada objek terdeteksi</p>
                 ) : (
-                  envDetections.map((d, i) => (
-                    <div
-                      key={i}
-                      className="flex items-center justify-between border border-slate-600 rounded-lg px-3 py-2"
-                    >
-                      <span className="text-sm font-semibold capitalize">
-                        {d.label.replace(/-/g, " ")}
-                      </span>
-                      <span className={`text-xs font-bold px-2 py-0.5 rounded ${d.label === "open-hole"
-                        ? "bg-red-900/60 text-red-300"
-                        : "bg-slate-700 text-slate-300"
-                        }`}>
-                        {(d.confidence * 100).toFixed(1)}%
-                      </span>
-                    </div>
-                  ))
+                  envDetections.map((d, i) => {
+                    // Handle both label and class_name
+                    const rawLabel = d.class_name || d.label || "";
+                    const labelMap: Record<string, string> = {
+                      "open-hole": "🚨 Lubang Terbuka",
+                      "hard-hat": "🪖 Helm Konstruksi",
+                      "barricade": "🚧 Barikade",
+                      "safety-cone": "🟧 Kerucut Safety",
+                      "vest": "🦺 Rompi Keselamatan",
+                      "open_hole": "🚨 Lubang Terbuka",
+                    };
+                    const displayLabel = labelMap[rawLabel] || rawLabel.replace(/-/g, " ").replace(/_/g, " ").toUpperCase() || "OBJEK";
+                    const isDangerous = rawLabel === "open-hole" || rawLabel === "open_hole";
+
+                    return (
+                      <div
+                        key={i}
+                        className={`flex items-center justify-between border rounded-lg px-3 py-2 ${isDangerous ? "border-red-500/60 bg-red-900/20" : "border-slate-600"}`}
+                      >
+                        <div className="flex flex-col">
+                          <span className="text-sm font-bold">
+                            {displayLabel}
+                          </span>
+                          <span className="text-[10px] text-slate-500 uppercase">
+                            {rawLabel}
+                          </span>
+                        </div>
+                        <span className={`text-xs font-bold px-2 py-0.5 rounded ${isDangerous
+                          ? "bg-red-900/60 text-red-300"
+                          : "bg-slate-700 text-slate-300"
+                          }`}>
+                          {(d.confidence * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                    );
+                  })
                 )}
               </div>
 
               {/* Road Damage */}
               <div className="bg-slate-800/60 border border-slate-700 rounded-xl p-4 space-y-3">
                 <h3 className="font-black text-sm uppercase tracking-widest text-blue-400">
-                  🛣️ Kerusakan Jalan ({(result.detections as any).total_road ?? 0})
+                  🛣️ Kerusakan Jalan ({result.detections.total_road ?? 0})
                 </h3>
                 {roadDetections.length === 0 ? (
                   <p className="text-slate-500 text-sm">Tidak ada kerusakan jalan terdeteksi</p>
                 ) : (
-                  roadDetections.map((d: any, i: number) => (
-                    <div
-                      key={i}
-                      className="flex items-center justify-between border border-slate-600 rounded-lg px-3 py-2"
-                    >
-                      <span className="text-sm font-semibold capitalize">
-                        {d.label.replace(/-/g, " ")}
-                      </span>
-                      <span className={`text-xs font-bold px-2 py-0.5 rounded ${d.label === "lubang"
-                        ? "bg-blue-900/60 text-blue-300"
-                        : d.label === "retak"
-                          ? "bg-orange-900/60 text-orange-300"
-                          : "bg-green-900/60 text-green-300"
-                        }`}>
-                        {(d.confidence * 100).toFixed(1)}%
-                      </span>
-                    </div>
-                  ))
+                  roadDetections.map((d, i) => {
+                    const rawLabel = d.class_name || d.label || "";
+                    const labelMap: Record<string, string> = {
+                      "lubang": "🕳️ Lubang Jalan",
+                      "retak": "⚠️ Retakan Jalan",
+                      "tambalan": "🔧 Tambalan Jalan",
+                    };
+                    const displayLabel = labelMap[rawLabel] || rawLabel.replace(/-/g, " ").replace(/_/g, " ").toUpperCase() || "JALAN";
+                    const isDangerous = rawLabel === "lubang";
+
+                    return (
+                      <div
+                        key={i}
+                        className={`flex items-center justify-between border rounded-lg px-3 py-2 ${isDangerous ? "border-red-500/60 bg-red-900/20" : "border-slate-600"}`}
+                      >
+                        <div className="flex flex-col">
+                          <span className="text-sm font-bold">
+                            {displayLabel}
+                          </span>
+                          <span className="text-[10px] text-slate-500 uppercase">
+                            {rawLabel}
+                          </span>
+                        </div>
+                        <span className={`text-xs font-bold px-2 py-0.5 rounded ${rawLabel === "lubang"
+                          ? "bg-red-900/60 text-red-300"
+                          : rawLabel === "retak"
+                            ? "bg-orange-900/60 text-orange-300"
+                            : "bg-green-900/60 text-green-300"
+                          }`}>
+                          {(d.confidence * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                    );
+                  })
                 )}
               </div>
             </div>

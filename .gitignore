@@ -32,14 +32,8 @@ Gas_Sensors_Measurements.csv
 dataset/
 training/runs*/
 
-# Model weights and generated model artifacts
-*.pt
-*.onnx
-*.engine
-backend/Model/
-backend/models/
+# Model backups and duplicate local copies
 backend/models copy/
-model/
 backup/
 
 # Built binaries

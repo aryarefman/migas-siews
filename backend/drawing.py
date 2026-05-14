@@ -107,19 +107,56 @@ def draw_persons(
 
 
 def draw_env_hazards(frame: np.ndarray, hazards: List[dict], font_scale: float = 0.5):
-    """Draw environmental hazard detections (dangerous areas, barricades, etc.)."""
+    """Draw environmental hazard detections with auto dynamic polygon overlay."""
+    if not hazards:
+        return
+
+    overlay = frame.copy()
+
     for haz in hazards:
         bbox = haz["bbox"]
         x1, y1, x2, y2 = [int(v) for v in bbox]
         label_text = haz.get("label", haz.get("class_name", "Hazard"))
         conf = haz.get("confidence", 0)
-        label = f"DANGER: {label_text.upper()} {conf:.0%}"
+        category = haz.get("category", "")
 
-        color = COLOR_DANGER
-        thickness = 2
+        # Fire/smoke gets special polygon treatment
+        is_fire_smoke = category == "fire_smoke" or label_text.lower() in ("fire", "smoke")
 
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
+        if is_fire_smoke:
+            color = (0, 0, 255) if label_text.lower() == "fire" else (128, 0, 200)
+            label = f"🔥 DANGER: {label_text.upper()} {conf:.0%}"
 
+            # Auto dynamic polygon — expanded area around detection
+            pad_x = int((x2 - x1) * 0.15)
+            pad_y = int((y2 - y1) * 0.15)
+            poly_pts = np.array([
+                [x1 - pad_x, y1 - pad_y],
+                [x2 + pad_x, y1 - pad_y],
+                [x2 + pad_x, y2 + pad_y],
+                [x1 - pad_x, y2 + pad_y],
+            ], dtype=np.int32)
+
+            # Clip to frame bounds
+            h, w = frame.shape[:2]
+            poly_pts[:, 0] = np.clip(poly_pts[:, 0], 0, w - 1)
+            poly_pts[:, 1] = np.clip(poly_pts[:, 1], 0, h - 1)
+
+            # Semi-transparent danger zone fill
+            cv2.fillPoly(overlay, [poly_pts], color)
+            cv2.polylines(frame, [poly_pts], True, color, 3, cv2.LINE_AA)
+
+            # Pulsing corner markers
+            corner_len = min(20, (x2 - x1) // 4)
+            for cx, cy in [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]:
+                cv2.line(frame, (cx, cy), (cx + corner_len if cx == x1 else cx - corner_len, cy), color, 3)
+                cv2.line(frame, (cx, cy), (cx, cy + corner_len if cy == y1 else cy - corner_len), color, 3)
+        else:
+            color = COLOR_DANGER
+            label = f"DANGER: {label_text.upper()} {conf:.0%}"
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+
+        # Label
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
         cv2.rectangle(frame, (x1, y1 - th - 8), (x1 + tw + 8, y1), color, -1)
         cv2.putText(
@@ -127,9 +164,17 @@ def draw_env_hazards(frame: np.ndarray, hazards: List[dict], font_scale: float =
             cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), 1, cv2.LINE_AA
         )
 
+    # Apply overlay with transparency for fire/smoke zones
+    cv2.addWeighted(overlay, 0.2, frame, 0.8, 0, frame)
+
 
 def draw_road_damage(frame: np.ndarray, road: List[dict], font_scale: float = 0.5):
-    """Draw road damage detections (potholes, cracks, patches)."""
+    """Draw road damage detections with auto dynamic polygon (irregular shape)."""
+    if not road:
+        return
+
+    overlay = frame.copy()
+
     for r in road:
         bbox = r["bbox"]
         x1, y1, x2, y2 = [int(v) for v in bbox]
@@ -137,16 +182,53 @@ def draw_road_damage(frame: np.ndarray, road: List[dict], font_scale: float = 0.
         conf = r.get("confidence", 0)
         label = f"ROAD: {label_text.upper()} {conf:.0%}"
 
-        color = COLOR_WARNING
+        # Color based on damage type
+        if label_text.lower() == "lubang":
+            color = (0, 80, 255)  # Deep orange for potholes
+        elif label_text.lower() == "retak":
+            color = (0, 200, 255)  # Yellow for cracks
+        else:
+            color = COLOR_WARNING
 
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        # Auto dynamic polygon — irregular shape around road damage
+        cx = (x1 + x2) // 2
+        cy = (y1 + y2) // 2
+        w_half = (x2 - x1) // 2
+        h_half = (y2 - y1) // 2
 
+        # Create irregular polygon (simulates road damage area)
+        poly_pts = np.array([
+            [x1 - int(w_half * 0.1), y1 + int(h_half * 0.2)],
+            [cx - int(w_half * 0.3), y1 - int(h_half * 0.1)],
+            [cx + int(w_half * 0.3), y1 - int(h_half * 0.1)],
+            [x2 + int(w_half * 0.1), y1 + int(h_half * 0.2)],
+            [x2 + int(w_half * 0.15), cy],
+            [x2 + int(w_half * 0.1), y2 - int(h_half * 0.2)],
+            [cx + int(w_half * 0.2), y2 + int(h_half * 0.1)],
+            [cx - int(w_half * 0.2), y2 + int(h_half * 0.1)],
+            [x1 - int(w_half * 0.1), y2 - int(h_half * 0.2)],
+            [x1 - int(w_half * 0.15), cy],
+        ], dtype=np.int32)
+
+        # Clip to frame bounds
+        h, w = frame.shape[:2]
+        poly_pts[:, 0] = np.clip(poly_pts[:, 0], 0, w - 1)
+        poly_pts[:, 1] = np.clip(poly_pts[:, 1], 0, h - 1)
+
+        # Fill polygon with semi-transparent color
+        cv2.fillPoly(overlay, [poly_pts], color)
+        cv2.polylines(frame, [poly_pts], True, color, 2, cv2.LINE_AA)
+
+        # Label
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
         cv2.rectangle(frame, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
         cv2.putText(
             frame, label, (x1 + 2, y1 - 3),
             cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), 1, cv2.LINE_AA
         )
+
+    # Apply overlay
+    cv2.addWeighted(overlay, 0.25, frame, 0.75, 0, frame)
 
 
 def draw_safety_cones(frame: np.ndarray, safety_cones: List[dict], font_scale: float = 0.5):
@@ -172,15 +254,55 @@ def draw_safety_cones(frame: np.ndarray, safety_cones: List[dict], font_scale: f
 
 
 def draw_vehicles(frame: np.ndarray, vehicles: List[dict], font_scale: float = 0.5):
-    """Draw vehicle detections."""
+    """Draw vehicle detections with auto dynamic polygon."""
+    if not vehicles:
+        return
+
+    overlay = frame.copy()
+
     for vehicle in vehicles:
         bbox = vehicle.get("bbox", [])
         if len(bbox) != 4:
             continue
+        x1, y1, x2, y2 = [int(v) for v in bbox]
         label_text = vehicle.get("label", vehicle.get("class_name", "vehicle"))
         conf = vehicle.get("confidence", 0)
         label = f"VEHICLE: {label_text.upper()} {conf:.0%}"
-        draw_bounding_box(frame, bbox, label, COLOR_VEHICLE, thickness=2, font_scale=font_scale)
+
+        color = COLOR_VEHICLE
+
+        # Auto dynamic polygon — vehicle-shaped (wider bottom, narrower top)
+        pad = int((x2 - x1) * 0.05)
+        poly_pts = np.array([
+            [x1 + pad, y1],
+            [x2 - pad, y1],
+            [x2 + pad, y1 + int((y2 - y1) * 0.3)],
+            [x2 + pad, y2 - pad],
+            [x2 - pad, y2],
+            [x1 + pad, y2],
+            [x1 - pad, y2 - pad],
+            [x1 - pad, y1 + int((y2 - y1) * 0.3)],
+        ], dtype=np.int32)
+
+        # Clip to frame bounds
+        h, w = frame.shape[:2]
+        poly_pts[:, 0] = np.clip(poly_pts[:, 0], 0, w - 1)
+        poly_pts[:, 1] = np.clip(poly_pts[:, 1], 0, h - 1)
+
+        # Semi-transparent fill
+        cv2.fillPoly(overlay, [poly_pts], color)
+        cv2.polylines(frame, [poly_pts], True, color, 2, cv2.LINE_AA)
+
+        # Label
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
+        cv2.rectangle(frame, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
+        cv2.putText(
+            frame, label, (x1 + 2, y1 - 3),
+            cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), 1, cv2.LINE_AA
+        )
+
+    # Apply overlay
+    cv2.addWeighted(overlay, 0.2, frame, 0.8, 0, frame)
 
 
 def draw_zones(frame: np.ndarray, zones: List[dict]):

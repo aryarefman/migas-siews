@@ -51,7 +51,22 @@ class FaceManager:
                     data = json.load(f)
                 self._registered = []
                 for entry in data:
-                    entry["encoding"] = np.array(entry["encoding"]) if entry.get("encoding") else None
+                    # Handle multi-encoding format
+                    if "encodings" in entry and entry["encodings"]:
+                        entry["encodings"] = [
+                            np.array(e) if e is not None else None
+                            for e in entry["encodings"]
+                        ]
+                    else:
+                        # Migrate old single-encoding to list
+                        old_enc = entry.get("encoding")
+                        if old_enc is not None and len(old_enc) > 0:
+                            entry["encodings"] = [np.array(old_enc)]
+                        else:
+                            entry["encodings"] = []
+
+                    # Keep old field for backward compat
+                    entry["encoding"] = None
                     self._registered.append(entry)
                 print(f"[FACE] Loaded {len(self._registered)} registered faces")
             except Exception as e:
@@ -65,17 +80,25 @@ class FaceManager:
         data = []
         for entry in self._registered:
             d = entry.copy()
-            if isinstance(d.get("encoding"), np.ndarray):
-                d["encoding"] = d["encoding"].tolist()
-            elif d.get("encoding") is None:
-                d["encoding"] = []
+            # Save encodings list
+            if "encodings" in d and d["encodings"]:
+                d["encodings"] = [
+                    e.tolist() if isinstance(e, np.ndarray) else e
+                    for e in d["encodings"] if e is not None
+                ]
+            # Clear deprecated single encoding field
+            d["encoding"] = []
             data.append(d)
         with open(FACE_DB_FILE, "w") as f:
             json.dump(data, f, indent=2)
 
     def register_face(self, image_bytes: bytes, name: str, code: str = "", phone: str = "") -> dict:
         """
-        Register a new face.
+        Register a new face or add encoding to existing person.
+
+        If a person with the same name+code already exists, the new encoding
+        is appended to their encodings list (multi-angle support).
+        Otherwise, a new person entry is created.
 
         Args:
             image_bytes: Raw image bytes (JPEG/PNG)
@@ -92,7 +115,55 @@ class FaceManager:
         if img is None:
             return {"success": False, "error": "Gagal membaca gambar"}
 
-        # Generate ID
+        # Extract encoding
+        encoding = self._encode_face(img)
+        if encoding is None:
+            return {"success": False, "error": "Tidak ada wajah terdeteksi dalam gambar"}
+
+        # Check if person already exists (same name OR same code)
+        existing = self._find_existing_person(name, code)
+
+        if existing is not None:
+            # Add encoding to existing person
+            idx = existing
+            entry = self._registered[idx]
+
+            # Migrate old single-encoding format to multi-encoding
+            if "encodings" not in entry:
+                old_enc = entry.get("encoding")
+                entry["encodings"] = [old_enc] if old_enc is not None and len(old_enc) > 0 else []
+                entry["encoding"] = None  # Keep for backward compat but not used
+
+            entry["encodings"].append(encoding)
+
+            # Save additional photo
+            photo_idx = len(entry.get("photos", []))
+            img_filename = f"{entry['id']}_angle{photo_idx}.jpg"
+            img_path = os.path.join(FACE_DATA_DIR, img_filename)
+            cv2.imwrite(img_path, img)
+
+            if "photos" not in entry:
+                entry["photos"] = [entry.get("image_path", "")]
+            entry["photos"].append(f"static/faces/{img_filename}")
+
+            # Update phone if provided
+            if phone and not entry.get("phone"):
+                entry["phone"] = phone
+
+            self._save_db()
+
+            return {
+                "success": True,
+                "id": entry["id"],
+                "name": entry["name"],
+                "code": entry.get("code", ""),
+                "phone": entry.get("phone", ""),
+                "image_url": f"/static/faces/{img_filename}",
+                "total_encodings": len(entry["encodings"]),
+                "message": f"Foto tambahan berhasil ditambahkan ({len(entry['encodings'])} total)",
+            }
+
+        # New person — create fresh entry
         face_id = f"face_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{len(self._registered)}"
 
         # Save image
@@ -100,17 +171,14 @@ class FaceManager:
         img_path = os.path.join(FACE_DATA_DIR, img_filename)
         cv2.imwrite(img_path, img)
 
-        # Extract encoding
-        encoding = self._encode_face(img)
-        if encoding is None:
-            return {"success": False, "error": "Tidak ada wajah terdeteksi dalam gambar"}
-
         entry = {
             "id": face_id,
             "name": name,
             "code": code,
             "phone": phone,
-            "encoding": encoding,
+            "encoding": None,  # Deprecated — use encodings list
+            "encodings": [encoding],
+            "photos": [f"static/faces/{img_filename}"],
             "image_path": f"static/faces/{img_filename}",
             "registered_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -124,7 +192,22 @@ class FaceManager:
             "code": code,
             "phone": phone,
             "image_url": f"/static/faces/{img_filename}",
+            "total_encodings": 1,
         }
+
+    def _find_existing_person(self, name: str, code: str) -> Optional[int]:
+        """Find index of existing person by name or code."""
+        name_lower = name.strip().lower()
+        code_clean = code.strip().upper() if code else ""
+
+        for i, entry in enumerate(self._registered):
+            # Match by code first (more reliable)
+            if code_clean and entry.get("code", "").strip().upper() == code_clean:
+                return i
+            # Match by name
+            if entry.get("name", "").strip().lower() == name_lower:
+                return i
+        return None
 
     def _encode_face(self, img: np.ndarray) -> Optional[np.ndarray]:
         """Extract face encoding from an image."""
@@ -308,33 +391,48 @@ class FaceManager:
         return results
 
     def _match_encoding_dlib(self, encoding: np.ndarray) -> Optional[dict]:
-        """Find best match from registered faces using dlib encodings."""
+        """
+        Find best match from registered faces using dlib encodings.
+        Supports multi-encoding per person — checks all angles and picks
+        the closest match across all encodings for each person.
+        """
         if not self._registered:
             return None
 
-        registered_encodings = []
-        valid_entries = []
-        for entry in self._registered:
-            if entry.get("encoding") is not None and len(entry["encoding"]) == 128:
-                registered_encodings.append(entry["encoding"])
-                valid_entries.append(entry)
+        best_match = None
+        best_dist = float('inf')
 
-        if not registered_encodings:
+        for entry in self._registered:
+            # Support both old format (single encoding) and new (encodings list)
+            encodings_list = entry.get("encodings", [])
+            if not encodings_list:
+                # Fallback to old single encoding
+                old_enc = entry.get("encoding")
+                if old_enc is not None and len(old_enc) == 128:
+                    encodings_list = [old_enc]
+                else:
+                    continue
+
+            # Check all encodings for this person, keep minimum distance
+            for enc in encodings_list:
+                if enc is None or len(enc) != 128:
+                    continue
+                enc_arr = np.array(enc) if not isinstance(enc, np.ndarray) else enc
+                dist = float(fr.face_distance([enc_arr], encoding)[0])
+                if dist < best_dist:
+                    best_dist = dist
+                    best_match = entry
+
+        if best_match is None or best_dist > self.tolerance:
             return None
 
-        distances = fr.face_distance(registered_encodings, encoding)
-        best_idx = np.argmin(distances)
-        best_dist = distances[best_idx]
-
-        if best_dist <= self.tolerance:
-            confidence = max(0.0, 1.0 - best_dist)
-            return {
-                "id": valid_entries[best_idx]["id"],
-                "name": valid_entries[best_idx]["name"],
-                "code": valid_entries[best_idx].get("code", ""),
-                "confidence": round(confidence, 3),
-            }
-        return None
+        confidence = max(0.0, 1.0 - best_dist)
+        return {
+            "id": best_match["id"],
+            "name": best_match["name"],
+            "code": best_match.get("code", ""),
+            "confidence": round(confidence, 3),
+        }
 
     def _match_encoding_opencv(self, hist: np.ndarray) -> Optional[dict]:
         """Match using histogram correlation."""
@@ -372,6 +470,8 @@ class FaceManager:
                 "code": e.get("code", ""),
                 "phone": e.get("phone", ""),
                 "image_url": f"/{e['image_path']}",
+                "photos": [f"/{p}" for p in e.get("photos", [e.get("image_path", "")])],
+                "total_encodings": len(e.get("encodings", [])),
                 "registered_at": e.get("registered_at", ""),
             }
             for e in self._registered

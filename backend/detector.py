@@ -209,8 +209,8 @@ class UnifiedDetector:
         # ── Threshold selection ──────────────────────────────────────────────
         # Photo mode uses lower thresholds — static images have less noise
         env_conf = 0.35 if photo_mode else ENV_CONFIDENCE_THRESHOLD
-        road_conf = 0.40 if photo_mode else ROAD_CONFIDENCE_THRESHOLD
-        road_area_min = 0.001 if photo_mode else 0.003  # Relaxed area filter for photos
+        road_conf = 0.30 if photo_mode else ROAD_CONFIDENCE_THRESHOLD
+        road_area_min = 0.0005 if photo_mode else 0.003  # Very relaxed for photos
 
         # Stage 3: Environment hazards (includes safety cones)
         env_results = self.env_model(frame, verbose=False, conf=env_conf, device=DEVICE)

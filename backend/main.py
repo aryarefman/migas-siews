@@ -8,7 +8,7 @@ import os
 import shutil
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Optional, List
 
 import cv2
 import numpy as np
@@ -1222,12 +1222,54 @@ async def register_face(
     phone: str = Query(""),
     file: UploadFile = File(...),
 ):
-    """Register a new face from an uploaded image."""
+    """Register a new face from an uploaded image.
+    If person with same name/code exists, adds encoding to their profile (multi-angle)."""
     contents = await file.read()
     result = face_manager.register_face(contents, name, code, phone)
     if not result["success"]:
         raise HTTPException(status_code=400, detail=result.get("error", "Gagal registrasi wajah"))
     return result
+
+
+@app.post("/faces/register-multi")
+async def register_face_multi(
+    name: str = Query(...),
+    code: str = Query(""),
+    phone: str = Query(""),
+    files: List[UploadFile] = File(...),
+):
+    """Register multiple photos for one person at once (multi-angle support).
+    All photos are assigned to the same person ID."""
+    if not files:
+        raise HTTPException(status_code=400, detail="Tidak ada file yang diupload")
+
+    results = []
+    for f in files:
+        contents = await f.read()
+        result = face_manager.register_face(contents, name, code, phone)
+        results.append(result)
+
+    success_count = sum(1 for r in results if r.get("success"))
+    failed_count = len(results) - success_count
+
+    if success_count == 0:
+        raise HTTPException(status_code=400, detail="Semua foto gagal diproses. Pastikan wajah terlihat jelas.")
+
+    # Get final person info
+    person_id = next((r["id"] for r in results if r.get("success")), None)
+    total_encodings = max((r.get("total_encodings", 0) for r in results if r.get("success")), default=0)
+
+    return {
+        "success": True,
+        "id": person_id,
+        "name": name,
+        "code": code,
+        "phone": phone,
+        "photos_registered": success_count,
+        "photos_failed": failed_count,
+        "total_encodings": total_encodings,
+        "message": f"{success_count} foto berhasil didaftarkan untuk {name}",
+    }
 
 
 @app.delete("/faces/{face_id}")

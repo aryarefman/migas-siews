@@ -64,10 +64,18 @@ class ViolationChecker:
                 if not has_belt:
                     missing.append("NO BELT")
 
-                # Generate unique key per person for cooldown tracking
+                # Generate stable key per person for cooldown tracking
                 person_key = det.get("face_name", "") or ""
-                if person_key == "Unknown":
-                    person_key = det.get("ocr_code", "") or f"person_{i}"
+                if person_key == "Unknown" or person_key == "":
+                    # Use OCR code if available
+                    person_key = det.get("ocr_code", "") or ""
+                if not person_key or person_key == "Unknown":
+                    # Fallback: use bbox grid position (stable across frames)
+                    # Quantize to 100px grid so small movements don't create new keys
+                    bbox = det.get("bbox", [0, 0, 0, 0])
+                    cx = (bbox[0] + bbox[2]) // 200  # grid cell X
+                    cy = (bbox[1] + bbox[3]) // 200  # grid cell Y
+                    person_key = f"pos_{cx}_{cy}"
                 
                 violations.append(Violation(
                     zone_id=hash(person_key) % 10000,  # Unique per-person
@@ -193,7 +201,8 @@ class ViolationChecker:
         hazards: List[dict],
         zones: List[dict],
         frame_width: int,
-        frame_height: int
+        frame_height: int,
+        road_detections: List[dict] = None,
     ) -> List[Violation]:
         """Run all violation checks and return combined results."""
         all_violations = []
@@ -203,7 +212,71 @@ class ViolationChecker:
         all_violations.extend(self.check_hazard_violations(persons, hazards))
         all_violations.extend(self.check_zone_violations(persons, zones, frame_width, frame_height))
 
+        # Auto-zone: road damage is always a violation when detected
+        if road_detections:
+            all_violations.extend(self.check_road_damage_violations(road_detections))
+
+        # Auto-zone: env hazards (open hole) inside manual zones
+        all_violations.extend(self.check_hazard_in_zone_violations(hazards, zones, frame_width, frame_height))
+
         return all_violations
+
+    def check_road_damage_violations(self, road_detections: List[dict]) -> List[Violation]:
+        """
+        Road damage (pothole/lubang jalan) is always a violation when detected.
+        Auto-generates a dynamic zone around the detection.
+        """
+        violations = []
+        for i, road in enumerate(road_detections):
+            label = road.get("class_name", road.get("label", "pothole"))
+            conf = road.get("confidence", 0)
+            display_name = label.replace("_", " ").upper()
+            violations.append(Violation(
+                zone_id=900 + i,
+                zone_name=f"DANGER: {display_name}",
+                risk_level="high",
+                violation_type="road_damage",
+                confidence=conf,
+            ))
+        return violations
+
+    def check_hazard_in_zone_violations(
+        self,
+        hazards: List[dict],
+        zones: List[dict],
+        frame_width: int,
+        frame_height: int,
+    ) -> List[Violation]:
+        """
+        Check if env hazards (open hole, etc.) are inside manual zones.
+        Fire/smoke is handled separately, so skip those here.
+        """
+        from polygon import point_in_polygon
+
+        violations = []
+        for haz in hazards:
+            label = haz.get("label", haz.get("class_name", "")).lower()
+            if label in FIRE_SMOKE_LABELS:
+                continue
+
+            bbox = haz.get("bbox", [0, 0, 0, 0])
+            x1, y1, x2, y2 = bbox
+            center_pt = ((x1 + x2) / 2 / frame_width, (y1 + y2) / 2 / frame_height)
+
+            for z in zones:
+                vertices = z.get("vertices", [])
+                if len(vertices) < 3:
+                    continue
+                if point_in_polygon(center_pt, vertices):
+                    violations.append(Violation(
+                        zone_id=z["id"],
+                        zone_name=f"{z['name']} ({label})",
+                        risk_level=z["risk_level"],
+                        violation_type="hazard_in_zone",
+                        confidence=haz.get("confidence", 0),
+                    ))
+                    break
+        return violations
 
     def get_violation_indices(self, persons: List[dict], violations: List[Violation]) -> Set[int]:
         """Get indices of persons that have violations."""

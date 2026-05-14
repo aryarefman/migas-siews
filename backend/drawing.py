@@ -43,7 +43,7 @@ def draw_persons(
     violations: Set[int],
     font_scale: float = 0.5
 ):
-    """Draw person detections with PPE status."""
+    """Draw person detections with name + PPE status."""
     for i, det in enumerate(persons):
         bbox = det["bbox"]
         x1, y1, x2, y2 = [int(v) for v in bbox]
@@ -53,7 +53,7 @@ def draw_persons(
         is_violation = i in violations
         color = COLOR_DANGER if is_violation else COLOR_SAFE
 
-        # Build explicit PPE status string.
+        # Build PPE status string
         if ppe_result:
             ppe_str = (
                 f"Helmet:{'OK' if ppe_result.get('has_helmet') else 'MISS'} "
@@ -63,22 +63,22 @@ def draw_persons(
         else:
             ppe_str = "PPE: not checked"
 
-        # Build label
+        # Build label: always "Person" first, then name
         face_name = det.get("face_name", "")
         ocr_code = det.get("ocr_code", "")
-        id_str = ""
+
         if face_name and face_name != "Unknown":
-            id_str = f" [{face_name}]"
+            label = f"Person: {face_name} {conf:.0%}"
         elif ocr_code:
-            id_str = f" [{ocr_code}]"
+            label = f"Person: {ocr_code} {conf:.0%}"
+        else:
+            label = f"Person {conf:.0%}"
 
-        label = f"Person {conf:.0%}{id_str}" if not is_violation else f"BAHAYA {conf:.0%}{id_str}"
-
-        # Draw box
+        # Draw box (thicker if violation)
         thickness = 4 if is_violation else 2
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
 
-        # Draw main label
+        # Draw main label (name)
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
         cv2.rectangle(frame, (x1, y1 - th - 8), (x1 + tw + 8, y1), color, -1)
         cv2.putText(
@@ -94,6 +94,16 @@ def draw_persons(
             frame, ppe_str, (x1 + 3, y2 + th2 + 3),
             cv2.FONT_HERSHEY_SIMPLEX, 0.35, ppe_color, 1, cv2.LINE_AA
         )
+
+        # If violation, add small warning indicator on top-right of box
+        if is_violation:
+            warn_label = "PPE VIOLATION"
+            (ww, wh), _ = cv2.getTextSize(warn_label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+            cv2.rectangle(frame, (x2 - ww - 8, y1), (x2, y1 + wh + 6), (0, 0, 180), -1)
+            cv2.putText(
+                frame, warn_label, (x2 - ww - 4, y1 + wh + 3),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA
+            )
 
 
 def draw_env_hazards(frame: np.ndarray, hazards: List[dict], font_scale: float = 0.5):
@@ -174,7 +184,7 @@ def draw_vehicles(frame: np.ndarray, vehicles: List[dict], font_scale: float = 0
 
 
 def draw_zones(frame: np.ndarray, zones: List[dict]):
-    """Draw zone polygons on the frame."""
+    """Draw zone polygons on the frame using custom zone color."""
     from polygon import point_in_polygon, compute_centroid
 
     h, w = frame.shape[:2]
@@ -187,19 +197,29 @@ def draw_zones(frame: np.ndarray, zones: List[dict]):
 
         risk = zone["risk_level"]
         name = zone["name"]
+        color_hex = zone.get("color", "#FF0000")
+
+        # Convert hex color to BGR
+        try:
+            color_hex = color_hex.lstrip("#")
+            r, g, b = int(color_hex[0:2], 16), int(color_hex[2:4], 16), int(color_hex[4:6], 16)
+            border_color = (b, g, r)  # BGR
+            # Slightly darker fill
+            fill_color = (max(0, b - 55), max(0, g - 55), max(0, r - 55))
+        except (ValueError, IndexError):
+            # Fallback based on risk level
+            if risk == "high":
+                fill_color = (0, 0, 200)
+                border_color = (0, 0, 255)
+            else:
+                fill_color = (0, 200, 200)
+                border_color = (0, 255, 255)
 
         # Convert normalized coords to pixel coords
         pts = np.array(
             [[int(v[0] * w), int(v[1] * h)] for v in vertices],
             dtype=np.int32
         )
-
-        if risk == "high":
-            fill_color = (0, 0, 200)
-            border_color = (0, 0, 255)
-        else:
-            fill_color = (0, 200, 200)
-            border_color = (0, 255, 255)
 
         # Semi-transparent fill
         cv2.fillPoly(overlay, [pts], fill_color)

@@ -35,6 +35,7 @@ from drawing import (
     draw_road_damage,
     draw_safety_cones,
     draw_vehicles,
+    draw_zones,
 )
 from detection_models import FIRE_SMOKE_LABELS
 
@@ -88,6 +89,31 @@ async def camera_reconnect():
     from stream import stream_manager
     stream_manager.request_camera_reconnect("manual_api")
     return {"status": "reconnecting", "message": "Camera reconnect triggered"}
+
+
+@app.get("/camera/status")
+async def camera_status():
+    """Get camera status for frontend polling."""
+    from stream import stream_manager
+    status = stream_manager.camera_status()
+    is_on = status in ("online", "simulation")
+    return {"status": "on" if is_on else "off", "detail": status}
+
+
+@app.post("/camera/enable")
+async def camera_enable():
+    """Enable camera feed."""
+    from stream import stream_manager
+    stream_manager.request_camera_reconnect("enable_api")
+    return {"status": "on", "message": "Camera enabled"}
+
+
+@app.post("/camera/disable")
+async def camera_disable():
+    """Disable camera feed."""
+    from stream import stream_manager
+    stream_manager.running = False
+    return {"status": "off", "message": "Camera disabled"}
 
 
 # ─── Quick Image Analysis (Testing) ──────────────────────────
@@ -160,7 +186,73 @@ async def analyze_uploaded_image(file: UploadFile = File(...), db: Session = Dep
 
         # 3. Draw Results for Feedback
         annotated = frame.copy()
-        draw_detections(annotated, persons, set(), hazards)
+
+        # ─── Dynamic Zone Violation Check ─────────────────────
+        from polygon import point_in_polygon
+        zone_violations = []
+        active_zones = db.query(Zone).filter(Zone.active == True).all()
+        zones_data = [
+            {
+                "id": z.id,
+                "name": z.name,
+                "vertices": json.loads(z.vertices_json),
+                "color": z.color,
+                "risk_level": z.risk_level,
+            }
+            for z in active_zones
+        ]
+
+        h, w = frame.shape[:2]
+        zone_person_indices = set()
+        for i, person in enumerate(persons):
+            bbox = person.get("bbox", [0, 0, 0, 0])
+            x1, y1, x2, y2 = bbox
+            body_points = [
+                ((x1 + x2) / 2 / w, (y1 + (y2 - y1) * 0.2) / h),
+                ((x1 + x2) / 2 / w, (y1 + y2) / 2 / h),
+                ((x1 + x2) / 2 / w, (y2 - 2) / h),
+            ]
+            for zone in zones_data:
+                vertices = zone["vertices"]
+                if len(vertices) < 3:
+                    continue
+                for pt in body_points:
+                    if point_in_polygon(pt, vertices):
+                        zone_person_indices.add(i)
+                        zone_violations.append({
+                            "type": "person_in_zone",
+                            "person_index": i,
+                            "zone_id": zone["id"],
+                            "zone_name": zone["name"],
+                            "risk_level": zone["risk_level"],
+                            "person_name": person.get("face_name", "Unknown"),
+                        })
+                        break
+
+        # Check env hazards (open hole, fire, smoke) against zones
+        for i, hazard in enumerate(hazards):
+            bbox = hazard.get("bbox", [0, 0, 0, 0])
+            x1, y1, x2, y2 = bbox
+            center_pt = ((x1 + x2) / 2 / w, (y1 + y2) / 2 / h)
+            for zone in zones_data:
+                vertices = zone["vertices"]
+                if len(vertices) < 3:
+                    continue
+                if point_in_polygon(center_pt, vertices):
+                    label = hazard.get("class_name", hazard.get("label", "unknown"))
+                    zone_violations.append({
+                        "type": "hazard_in_zone",
+                        "detection_index": i,
+                        "label": label,
+                        "confidence": round(hazard.get("confidence", 0), 3),
+                        "zone_id": zone["id"],
+                        "zone_name": zone["name"],
+                        "risk_level": zone["risk_level"],
+                    })
+                    break
+
+        # Only auto-zones on analyze photo (manual zones only on live camera)
+        draw_detections(annotated, persons, zone_person_indices, hazards)
         
         # 4. Encode result image to base64
         _, buffer = cv2.imencode(".jpg", annotated)
@@ -181,9 +273,11 @@ async def analyze_uploaded_image(file: UploadFile = File(...), db: Session = Dep
         clean_hazards = sanitize(hazards)
 
         return {
-            "summary": { "people_found": len(clean_persons), "hazards_found": len(clean_hazards) },
+            "summary": { "people_found": len(clean_persons), "hazards_found": len(clean_hazards), "zone_violations": len(zone_violations) },
             "detections": clean_persons,
             "hazards": clean_hazards,
+            "zone_violations": zone_violations,
+            "zones_checked": len(zones_data),
             "image": f"data:image/jpeg;base64,{img_str}"
         }
     except Exception as e:
@@ -848,12 +942,182 @@ async def analyze_image(file: UploadFile = File(...)):
                     person["face_name"] = registered["name"]
                     break
 
-    # violation_indices: persons that have ppe_violations (no zone check for photo analysis)
+    # violation_indices: persons that have ppe_violations OR are inside restricted zones
     violation_indices = {
         i for i, p in enumerate(persons) if p.get("ppe_violations")
     }
 
+    # ─── Dynamic Zone Violation Check ─────────────────────────
+    from polygon import point_in_polygon
+    from database import SessionLocal
+    zone_violations = []
+    db_zones = SessionLocal()
+    try:
+        active_zones = db_zones.query(Zone).filter(Zone.active == True).all()
+        zones_data = [
+            {
+                "id": z.id,
+                "name": z.name,
+                "vertices": json.loads(z.vertices_json),
+                "color": z.color,
+                "risk_level": z.risk_level,
+            }
+            for z in active_zones
+        ]
+    finally:
+        db_zones.close()
+
+    h, w = frame.shape[:2]
+
+    # Check persons against manual zones
+    for i, person in enumerate(persons):
+        bbox = person.get("bbox", [0, 0, 0, 0])
+        x1, y1, x2, y2 = bbox
+
+        # Check 3 body points (normalized)
+        body_points = [
+            ((x1 + x2) / 2 / w, (y1 + (y2 - y1) * 0.2) / h),  # head
+            ((x1 + x2) / 2 / w, (y1 + y2) / 2 / h),            # chest
+            ((x1 + x2) / 2 / w, (y2 - 2) / h),                 # feet
+        ]
+
+        for zone in zones_data:
+            vertices = zone["vertices"]
+            if len(vertices) < 3:
+                continue
+            for pt in body_points:
+                if point_in_polygon(pt, vertices):
+                    violation_indices.add(i)
+                    zone_violations.append({
+                        "type": "person_in_zone",
+                        "person_index": i,
+                        "zone_id": zone["id"],
+                        "zone_name": zone["name"],
+                        "risk_level": zone["risk_level"],
+                        "person_name": person.get("face_name", "Unknown"),
+                    })
+                    break
+
+    # Check env hazards (open hole, fire, smoke) against manual zones
+    for i, hazard in enumerate(env_detections):
+        bbox = hazard.get("bbox", [0, 0, 0, 0])
+        x1, y1, x2, y2 = bbox
+        center_pt = ((x1 + x2) / 2 / w, (y1 + y2) / 2 / h)
+
+        for zone in zones_data:
+            vertices = zone["vertices"]
+            if len(vertices) < 3:
+                continue
+            if point_in_polygon(center_pt, vertices):
+                label = hazard.get("class_name", hazard.get("label", "unknown"))
+                zone_violations.append({
+                    "type": "hazard_in_zone",
+                    "detection_index": i,
+                    "label": label,
+                    "confidence": round(hazard.get("confidence", 0), 3),
+                    "zone_id": zone["id"],
+                    "zone_name": zone["name"],
+                    "risk_level": zone["risk_level"],
+                })
+                break
+
+    # Check road damage (pothole/lubang jalan) against manual zones
+    for i, road in enumerate(road_detections):
+        bbox = road.get("bbox", [0, 0, 0, 0])
+        x1, y1, x2, y2 = bbox
+        center_pt = ((x1 + x2) / 2 / w, (y1 + y2) / 2 / h)
+
+        for zone in zones_data:
+            vertices = zone["vertices"]
+            if len(vertices) < 3:
+                continue
+            if point_in_polygon(center_pt, vertices):
+                label = road.get("class_name", "pothole")
+                zone_violations.append({
+                    "type": "road_damage_in_zone",
+                    "detection_index": i,
+                    "label": label,
+                    "confidence": round(road.get("confidence", 0), 3),
+                    "zone_id": zone["id"],
+                    "zone_name": zone["name"],
+                    "risk_level": zone["risk_level"],
+                })
+                break
+
+    # ─── Auto-Generated Dynamic Zones ─────────────────────────
+    # Automatically create polygon zones around detected hazards
+    # (pothole, open hole, fire, smoke) — no manual zone needed.
+    auto_zones = []
+
+    # Auto-zone for env hazards (open hole, fire, smoke)
+    for i, hazard in enumerate(env_detections):
+        bbox = hazard.get("bbox", [0, 0, 0, 0])
+        x1, y1, x2, y2 = bbox
+        label = hazard.get("class_name", hazard.get("label", "unknown"))
+        conf = hazard.get("confidence", 0)
+
+        # Generate polygon from bbox with padding (normalized)
+        pad = 0.02  # 2% padding
+        nv = [
+            [max(0, x1 / w - pad), max(0, y1 / h - pad)],
+            [min(1, x2 / w + pad), max(0, y1 / h - pad)],
+            [min(1, x2 / w + pad), min(1, y2 / h + pad)],
+            [max(0, x1 / w - pad), min(1, y2 / h + pad)],
+        ]
+        display_name = label.replace("_", " ").upper()
+        auto_zone = {
+            "id": None,
+            "name": f"DANGER: {display_name}",
+            "vertices": nv,
+            "color": "#FF0000",
+            "risk_level": "high",
+        }
+        auto_zones.append(auto_zone)
+        zone_violations.append({
+            "type": "auto_zone_hazard",
+            "detection_index": i,
+            "label": label,
+            "confidence": round(conf, 3),
+            "zone_name": f"DANGER: {display_name}",
+            "risk_level": "high",
+        })
+
+    # Auto-zone for road damage (pothole/lubang)
+    for i, road in enumerate(road_detections):
+        bbox = road.get("bbox", [0, 0, 0, 0])
+        x1, y1, x2, y2 = bbox
+        label = road.get("class_name", "pothole")
+        conf = road.get("confidence", 0)
+
+        pad = 0.02
+        nv = [
+            [max(0, x1 / w - pad), max(0, y1 / h - pad)],
+            [min(1, x2 / w + pad), max(0, y1 / h - pad)],
+            [min(1, x2 / w + pad), min(1, y2 / h + pad)],
+            [max(0, x1 / w - pad), min(1, y2 / h + pad)],
+        ]
+        display_name = label.replace("_", " ").upper()
+        auto_zone = {
+            "id": None,
+            "name": f"DANGER: {display_name}",
+            "vertices": nv,
+            "color": "#FF6600",
+            "risk_level": "high",
+        }
+        auto_zones.append(auto_zone)
+        zone_violations.append({
+            "type": "auto_zone_road",
+            "detection_index": i,
+            "label": label,
+            "confidence": round(conf, 3),
+            "zone_name": f"DANGER: {display_name}",
+            "risk_level": "high",
+        })
+
     annotated = frame.copy()
+    # Only draw auto-generated zones on analyze photo (manual zones only on live camera)
+    if auto_zones:
+        draw_zones(annotated, auto_zones)
     draw_persons(annotated, persons, violation_indices)
     draw_env_hazards(annotated, env_detections)
     draw_road_damage(annotated, road_detections)
@@ -937,7 +1201,9 @@ async def analyze_image(file: UploadFile = File(...)):
             "total_road": len(road_detections),
             "total_safety_cones": len(safety_cones),
             "total_vehicles": len(vehicles),
-            "violations_found": bool(violation_indices) or hazard_violation_found,
+            "violations_found": bool(violation_indices) or hazard_violation_found or bool(zone_violations),
+            "zone_violations": zone_violations,
+            "zones_checked": len(zones_data),
         },
     }
 
@@ -973,14 +1239,27 @@ def delete_face(face_id: str):
     return {"status": "deleted", "id": face_id}
 
 
+@app.post("/faces/{face_id}/sample")
+async def add_face_sample(face_id: str, file: UploadFile = File(...)):
+    """
+    Add additional face sample to improve recognition accuracy.
+    More samples from different angles = better matching.
+    """
+    contents = await file.read()
+    result = face_manager.add_face_sample(face_id, contents)
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=result.get("error", "Gagal tambah sample"))
+    return result
+
+
 @app.post("/faces/train")
 def train_faces():
     """
-    Trigger face training/re-encoding.
-    In SIEWS+ 5.0, this re-loads the DB and ensures all encodings are valid.
+    Sync & Train: Re-encode all registered faces with current engine (ArcFace).
+    Use after changing face recognition engine or when recognition is inaccurate.
     """
-    face_manager._load_db()
-    return {"status": "success", "count": face_manager.count}
+    result = face_manager.retrain_all()
+    return result
 
 
 # ─── Stats Endpoint ───────────────────────────────────────────
@@ -1056,4 +1335,4 @@ def automated_scheduling():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8001)

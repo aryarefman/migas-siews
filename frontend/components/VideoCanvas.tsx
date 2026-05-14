@@ -31,11 +31,7 @@ export default function VideoCanvas({
   const imgRef = useRef<HTMLImageElement>(null);
   const [currentVertices, setCurrentVertices] = useState<number[][]>([]);
   const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
-  const [cameraOnline, setCameraOnline] = useState(true);
-
-  // MJPEG reconnect state
-  const retryCountRef = useRef(0);
-  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [cameraOnline, setCameraOnline] = useState(false);
 
   // Handle canvas resize to match the image
   const updateCanvasSize = useCallback(() => {
@@ -50,43 +46,23 @@ export default function VideoCanvas({
   useEffect(() => {
     updateCanvasSize();
     window.addEventListener("resize", updateCanvasSize);
-    return () => window.removeEventListener("resize", updateCanvasSize);
-  }, [updateCanvasSize]);
-
-  // MJPEG stream reconnect with exponential backoff
-  const scheduleRetry = useCallback(() => {
-    if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
-    // Backoff: 2s, 4s, 8s … capped at 30s
-    const delay = Math.min(30_000, 2_000 * Math.pow(2, retryCountRef.current));
-    retryCountRef.current += 1;
-    console.log(`[VideoCanvas] MJPEG retry in ${delay}ms (attempt ${retryCountRef.current})`);
-    retryTimerRef.current = setTimeout(() => {
-      if (imgRef.current) {
-        imgRef.current.src = `${API_URL}/stream?t=${Date.now()}`;
-      }
-    }, delay);
-  }, []);
-
-  const handleImgLoad = useCallback(() => {
-    setCameraOnline(true);
-    retryCountRef.current = 0;
-    if (retryTimerRef.current) {
-      clearTimeout(retryTimerRef.current);
-      retryTimerRef.current = null;
-    }
-    updateCanvasSize();
-  }, [updateCanvasSize]);
-
-  const handleImgError = useCallback(() => {
-    setCameraOnline(false);
-    scheduleRetry();
-  }, [scheduleRetry]);
-
-  useEffect(() => {
+    // Sync camera state with backend on mount
+    fetch(`${API_URL}/camera/status`)
+      .then(res => res.ok ? res.json() : { status: "off" })
+      .then(data => setCameraOnline(data.status === "on"))
+      .catch(() => setCameraOnline(false));
+    // Poll camera state every 5s
+    const interval = setInterval(() => {
+      fetch(`${API_URL}/camera/status`)
+        .then(res => res.ok ? res.json() : { status: "off" })
+        .then(data => setCameraOnline(data.status === "on"))
+        .catch(() => {});
+    }, 5000);
     return () => {
-      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+      window.removeEventListener("resize", updateCanvasSize);
+      clearInterval(interval);
     };
-  }, []);
+  }, [updateCanvasSize]);
 
   // Draw zones on canvas
   useEffect(() => {
@@ -209,6 +185,16 @@ export default function VideoCanvas({
     });
   };
 
+  const handleImgError = () => {
+    setCameraOnline(false);
+    setTimeout(() => {
+      if (imgRef.current) {
+        imgRef.current.src = `${API_URL}/stream?t=${Date.now()}`;
+        setCameraOnline(true);
+      }
+    }, 5000);
+  };
+
   return (
     <div
       ref={containerRef}
@@ -223,7 +209,7 @@ export default function VideoCanvas({
         src={`${API_URL}/stream`}
         alt="Live Camera Feed"
         className="w-full h-full block object-contain"
-        onLoad={handleImgLoad}
+        onLoad={updateCanvasSize}
         onError={handleImgError}
         style={{ background: "#020408" }}
       />
@@ -247,7 +233,7 @@ export default function VideoCanvas({
           </div>
           <p className="text-xs text-red-400 font-bold uppercase tracking-[0.2em]">Camera Feed Offline</p>
           <p className="text-industrial-500 text-[10px] font-semibold mt-1.5">
-            Reconnecting... (attempt {retryCountRef.current})
+            Attempting to reconnect...
           </p>
           <div className="mt-5 w-5 h-5 border-2 border-[#162033] border-t-red-400 rounded-full animate-spin" />
         </div>
@@ -273,6 +259,34 @@ export default function VideoCanvas({
           {cameraOnline ? "LIVE" : "OFF"}
         </span>
       </div>
+
+      {/* Camera Toggle Button */}
+      <button
+        onClick={async () => {
+          try {
+            const endpoint = cameraOnline ? `${API_URL}/camera/disable` : `${API_URL}/camera/enable`;
+            const res = await fetch(endpoint, { method: "POST" });
+            if (res.ok) {
+              const data = await res.json();
+              setCameraOnline(data.status === "on");
+            } else {
+              // Request failed - set camera to off state anyway for UX
+              setCameraOnline(false);
+              console.error("Camera toggle failed with status:", res.status);
+            }
+          } catch (err) {
+            console.error("Camera toggle failed:", err);
+            setCameraOnline(false);
+          }
+        }}
+        className={`absolute bottom-3 right-3 px-4 py-2 rounded-lg text-xs font-bold transition-all duration-300 ${
+          cameraOnline
+            ? "bg-red-500/20 border border-red-500/50 text-red-400 hover:bg-red-500/30"
+            : "bg-green-500/20 border border-green-500/50 text-green-400 hover:bg-green-500/30"
+        }`}
+      >
+        {cameraOnline ? "CAM OFF" : "CAM ON"}
+      </button>
     </div>
   );
 }

@@ -23,8 +23,8 @@ export async function POST(req: NextRequest) {
       );
     }
   } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
     console.error("[PROXY] Analyze error:", err);
-    const message = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json(
       { detail: `Proxy error: ${message}` },
       { status: 502 }

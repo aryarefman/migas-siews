@@ -58,8 +58,13 @@ export default function DashboardPage() {
   const [pendingVertices, setPendingVertices] = useState<number[][] | null>(null);
   const [newZoneName, setNewZoneName] = useState("");
   const [newZoneRisk, setNewZoneRisk] = useState("high");
+  const [newZoneColor, setNewZoneColor] = useState("#EF4444");
   const [facilityName, setFacilityName] = useState("Offshore Platform A");
   const [audioEnabled, setAudioEnabled] = useState(true);
+
+  // Audio elements
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [audioContext] = useState<AudioContext | null>(null);
 
   const playAlertSound = useCallback((type: "entry" | "warning" | "critical" | "shutdown" | "face" | "ocr") => {
     if (!audioEnabled) return;
@@ -121,14 +126,13 @@ export default function DashboardPage() {
   const handleSaveZone = async () => {
     if (!pendingVertices || !newZoneName.trim()) return;
     try {
-      const colors: Record<string, string> = { high: "#EF4444", low: "#F59E0B" };
       await fetch(`${API_URL}/polygons`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: newZoneName,
           vertices: pendingVertices,
-          color: colors[newZoneRisk] || "#EF4444",
+          color: newZoneColor,
           active: true,
           risk_level: newZoneRisk,
         }),
@@ -136,6 +140,7 @@ export default function DashboardPage() {
       setShowZoneDialog(false);
       setNewZoneName("");
       setNewZoneRisk("high");
+      setNewZoneColor("#EF4444");
       setPendingVertices(null);
       fetchZones();
       fetchStats();
@@ -206,7 +211,7 @@ export default function DashboardPage() {
             onClick={() => setAudioEnabled(!audioEnabled)}
             className={`px-3 py-2 rounded-lg flex items-center gap-2 border transition-all duration-200 ${
               audioEnabled
-                ? "bg-[#0c1220]/80 border-[#162033] text-amber-400 hover:border-amber-500/30"
+                ? "bg-[#0c1220]/80 border-[#162033] text-amber-400 hover:border-warning-600/30"
                 : "bg-[#0c1220]/40 border-[#162033]/50 text-industrial-600"
             }`}
           >
@@ -226,7 +231,7 @@ export default function DashboardPage() {
                 await fetch(`${API_URL}/stream/reset`, { method: "POST" });
                 window.location.reload();
               }}
-              className="px-3 py-2 rounded-lg flex items-center gap-2 border bg-[#0c1220]/80 border-[#162033] text-emerald-400 hover:border-emerald-500/30 transition-all duration-200"
+              className="px-3 py-2 rounded-lg flex items-center gap-2 border bg-[#0c1220]/80 border-[#162033] text-safe-500 hover:border-safe-500/30 transition-all duration-200"
             >
               <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
               <span className="text-[10px] font-semibold uppercase tracking-widest">Reset</span>
@@ -282,7 +287,7 @@ export default function DashboardPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="bg-[#0c1220] border border-[#1c2a42] p-8 w-full max-w-sm animate-fade-in rounded-2xl shadow-2xl shadow-black/50">
             <h3 className="text-sm font-bold text-white mb-6 uppercase tracking-[0.2em] flex items-center gap-3">
-              <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
+              <div className="w-8 h-8 rounded-lg bg-warning-600/10 border border-warning-600/20 flex items-center justify-center">
                 <svg className="w-4 h-4 text-amber-400" fill="currentColor" viewBox="0 0 24 24"><path d="M3 5v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2H5c-1.11 0-2 .9-2 2zm12 4c0 1.66-1.34 3-3 3s-3-1.34-3-3 1.34-3 3-3 3 1.34 3 3zm-9 8c0-2 4-3.1 6-3.1s6 1.1 6 3.1v1H6v-1z"/></svg>
               </div>
               Zone Config
@@ -305,25 +310,47 @@ export default function DashboardPage() {
                 <label className="block text-[10px] font-semibold text-industrial-400 uppercase tracking-widest mb-2">Risk Level</label>
                 <div className="grid grid-cols-2 gap-2">
                   <button
-                    onClick={() => setNewZoneRisk("high")}
+                    onClick={() => { setNewZoneRisk("high"); setNewZoneColor("#EF4444"); }}
                     className={`py-3 rounded-lg text-[11px] font-bold tracking-wider uppercase transition-all border ${
                       newZoneRisk === "high"
-                        ? "bg-red-500/15 border-red-500/40 text-red-400 shadow-lg shadow-red-500/10"
+                        ? "bg-danger-500/15 border-danger-500/40 text-danger-500 shadow-lg shadow-danger-500/10"
                         : "bg-[#070d18] border-[#1c2a42] text-industrial-500 hover:border-[#243b5c]"
                     }`}
                   >
                     High Risk
                   </button>
                   <button
-                    onClick={() => setNewZoneRisk("low")}
+                    onClick={() => { setNewZoneRisk("low"); setNewZoneColor("#F59E0B"); }}
                     className={`py-3 rounded-lg text-[11px] font-bold tracking-wider uppercase transition-all border ${
                       newZoneRisk === "low"
-                        ? "bg-amber-500/15 border-amber-500/40 text-amber-400 shadow-lg shadow-amber-500/10"
+                        ? "bg-warning-600/15 border-warning-600/40 text-warning-500 shadow-lg shadow-warning-500/10"
                         : "bg-[#070d18] border-[#1c2a42] text-industrial-500 hover:border-[#243b5c]"
                     }`}
                   >
                     Low Risk
                   </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-semibold text-industrial-400 uppercase tracking-widest mb-2">Zone Color</label>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="color"
+                    value={newZoneColor}
+                    onChange={(e) => setNewZoneColor(e.target.value)}
+                    className="w-10 h-10 rounded-lg border border-[#1c2a42] cursor-pointer bg-transparent"
+                  />
+                  <div className="flex gap-1.5 flex-wrap">
+                    {["#EF4444", "#F59E0B", "#10B981", "#3B82F6", "#8B5CF6", "#EC4899", "#06B6D4", "#F97316"].map((c) => (
+                      <button
+                        key={c}
+                        onClick={() => setNewZoneColor(c)}
+                        className={`w-7 h-7 rounded-md border-2 transition-all ${newZoneColor === c ? "border-white scale-110" : "border-transparent hover:border-white/30"}`}
+                        style={{ backgroundColor: c }}
+                      />
+                    ))}
+                  </div>
                 </div>
               </div>
 

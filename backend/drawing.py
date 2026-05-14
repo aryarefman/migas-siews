@@ -41,9 +41,9 @@ def draw_persons(
     frame: np.ndarray,
     persons: List[dict],
     violations: Set[int],
-    font_scale: float = 0.5
+    font_scale: float = 0.4
 ):
-    """Draw person detections with name + PPE status."""
+    """Draw person detections with name + PPE status (clean, minimal labels)."""
     for i, det in enumerate(persons):
         bbox = det["bbox"]
         x1, y1, x2, y2 = [int(v) for v in bbox]
@@ -53,60 +53,49 @@ def draw_persons(
         is_violation = i in violations
         color = COLOR_DANGER if is_violation else COLOR_SAFE
 
-        # Build PPE status string
-        if ppe_result:
-            ppe_str = (
-                f"Helmet:{'OK' if ppe_result.get('has_helmet') else 'MISS'} "
-                f"Vest:{'OK' if ppe_result.get('has_vest') else 'MISS'} "
-                f"Belt:{'OK' if ppe_result.get('has_belt') else 'MISS'}"
-            )
-        else:
-            ppe_str = "PPE: not checked"
-
-        # Build label: always "Person" first, then name
+        # Build label: name or "Person"
         face_name = det.get("face_name", "")
         ocr_code = det.get("ocr_code", "")
 
         if face_name and face_name != "Unknown":
-            label = f"Person: {face_name} {conf:.0%}"
+            label = f"{face_name} {conf:.0%}"
         elif ocr_code:
-            label = f"Person: {ocr_code} {conf:.0%}"
+            label = f"{ocr_code} {conf:.0%}"
         else:
             label = f"Person {conf:.0%}"
 
-        # Draw box (thicker if violation)
-        thickness = 4 if is_violation else 2
+        # Draw box
+        thickness = 3 if is_violation else 2
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
 
-        # Draw main label (name)
+        # Draw label (compact)
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
-        cv2.rectangle(frame, (x1, y1 - th - 8), (x1 + tw + 8, y1), color, -1)
+        cv2.rectangle(frame, (x1, y1 - th - 6), (x1 + tw + 6, y1), color, -1)
         cv2.putText(
-            frame, label, (x1 + 4, y1 - 4),
+            frame, label, (x1 + 3, y1 - 3),
             cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), 1, cv2.LINE_AA
         )
 
-        # Draw PPE status below box
-        (tw2, th2), _ = cv2.getTextSize(ppe_str, cv2.FONT_HERSHEY_SIMPLEX, 0.35, 1)
-        cv2.rectangle(frame, (x1, y2), (x1 + tw2 + 6, y2 + th2 + 6), (0, 0, 0), -1)
-        ppe_color = COLOR_DANGER if is_violation else COLOR_SAFE
-        cv2.putText(
-            frame, ppe_str, (x1 + 3, y2 + th2 + 3),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.35, ppe_color, 1, cv2.LINE_AA
-        )
+        # PPE status — only show if violation, compact single line below box
+        if is_violation and ppe_result:
+            parts = []
+            if not ppe_result.get("has_helmet"):
+                parts.append("Helmet:X")
+            if not ppe_result.get("has_vest"):
+                parts.append("Vest:X")
+            if not ppe_result.get("has_belt"):
+                parts.append("Belt:X")
+            if parts:
+                ppe_str = " ".join(parts)
+                (tw2, th2), _ = cv2.getTextSize(ppe_str, cv2.FONT_HERSHEY_SIMPLEX, 0.3, 1)
+                cv2.rectangle(frame, (x1, y2), (x1 + tw2 + 4, y2 + th2 + 4), (0, 0, 0), -1)
+                cv2.putText(
+                    frame, ppe_str, (x1 + 2, y2 + th2 + 2),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.3, COLOR_DANGER, 1, cv2.LINE_AA
+                )
 
-        # If violation, add small warning indicator on top-right of box
-        if is_violation:
-            warn_label = "PPE VIOLATION"
-            (ww, wh), _ = cv2.getTextSize(warn_label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
-            cv2.rectangle(frame, (x2 - ww - 8, y1), (x2, y1 + wh + 6), (0, 0, 180), -1)
-            cv2.putText(
-                frame, warn_label, (x2 - ww - 4, y1 + wh + 3),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA
-            )
 
-
-def draw_env_hazards(frame: np.ndarray, hazards: List[dict], font_scale: float = 0.5):
+def draw_env_hazards(frame: np.ndarray, hazards: List[dict], font_scale: float = 0.4):
     """Draw environmental hazard detections with auto dynamic polygon overlay."""
     if not hazards:
         return
@@ -125,11 +114,11 @@ def draw_env_hazards(frame: np.ndarray, hazards: List[dict], font_scale: float =
 
         if is_fire_smoke:
             color = (0, 0, 255) if label_text.lower() == "fire" else (128, 0, 200)
-            label = f"🔥 DANGER: {label_text.upper()} {conf:.0%}"
+            label = f"{label_text.upper()} {conf:.0%}"
 
             # Auto dynamic polygon — expanded area around detection
-            pad_x = int((x2 - x1) * 0.15)
-            pad_y = int((y2 - y1) * 0.15)
+            pad_x = int((x2 - x1) * 0.1)
+            pad_y = int((y2 - y1) * 0.1)
             poly_pts = np.array([
                 [x1 - pad_x, y1 - pad_y],
                 [x2 + pad_x, y1 - pad_y],
@@ -144,31 +133,25 @@ def draw_env_hazards(frame: np.ndarray, hazards: List[dict], font_scale: float =
 
             # Semi-transparent danger zone fill
             cv2.fillPoly(overlay, [poly_pts], color)
-            cv2.polylines(frame, [poly_pts], True, color, 3, cv2.LINE_AA)
-
-            # Pulsing corner markers
-            corner_len = min(20, (x2 - x1) // 4)
-            for cx, cy in [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]:
-                cv2.line(frame, (cx, cy), (cx + corner_len if cx == x1 else cx - corner_len, cy), color, 3)
-                cv2.line(frame, (cx, cy), (cx, cy + corner_len if cy == y1 else cy - corner_len), color, 3)
+            cv2.polylines(frame, [poly_pts], True, color, 2, cv2.LINE_AA)
         else:
             color = COLOR_DANGER
-            label = f"DANGER: {label_text.upper()} {conf:.0%}"
+            label = f"{label_text.upper()} {conf:.0%}"
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
-        # Label
+        # Compact label
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
-        cv2.rectangle(frame, (x1, y1 - th - 8), (x1 + tw + 8, y1), color, -1)
+        cv2.rectangle(frame, (x1, y1 - th - 5), (x1 + tw + 4, y1), color, -1)
         cv2.putText(
-            frame, label, (x1 + 4, y1 - 4),
+            frame, label, (x1 + 2, y1 - 2),
             cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), 1, cv2.LINE_AA
         )
 
     # Apply overlay with transparency for fire/smoke zones
-    cv2.addWeighted(overlay, 0.2, frame, 0.8, 0, frame)
+    cv2.addWeighted(overlay, 0.15, frame, 0.85, 0, frame)
 
 
-def draw_road_damage(frame: np.ndarray, road: List[dict], font_scale: float = 0.5):
+def draw_road_damage(frame: np.ndarray, road: List[dict], font_scale: float = 0.4):
     """Draw road damage detections with auto dynamic polygon (irregular shape)."""
     if not road:
         return
@@ -180,7 +163,7 @@ def draw_road_damage(frame: np.ndarray, road: List[dict], font_scale: float = 0.
         x1, y1, x2, y2 = [int(v) for v in bbox]
         label_text = r.get("label", r.get("class_name", "Road"))
         conf = r.get("confidence", 0)
-        label = f"ROAD: {label_text.upper()} {conf:.0%}"
+        label = f"{label_text.upper()} {conf:.0%}"
 
         # Color based on damage type
         if label_text.lower() == "lubang":
@@ -253,7 +236,7 @@ def draw_safety_cones(frame: np.ndarray, safety_cones: List[dict], font_scale: f
         )
 
 
-def draw_vehicles(frame: np.ndarray, vehicles: List[dict], font_scale: float = 0.5):
+def draw_vehicles(frame: np.ndarray, vehicles: List[dict], font_scale: float = 0.4):
     """Draw vehicle detections with auto dynamic polygon."""
     if not vehicles:
         return
@@ -267,7 +250,7 @@ def draw_vehicles(frame: np.ndarray, vehicles: List[dict], font_scale: float = 0
         x1, y1, x2, y2 = [int(v) for v in bbox]
         label_text = vehicle.get("label", vehicle.get("class_name", "vehicle"))
         conf = vehicle.get("confidence", 0)
-        label = f"VEHICLE: {label_text.upper()} {conf:.0%}"
+        label = f"{label_text.upper()} {conf:.0%}"
 
         color = COLOR_VEHICLE
 

@@ -19,6 +19,7 @@ from detection_models import (
     SAFETY_CONE_CONFIDENCE,
     SMOKE_CONFIDENCE_THRESHOLD,
     PPE_IOU_THRESHOLD,
+    VEHICLE_CONFIDENCE_THRESHOLD,
     VIOLATION_NO_HELMET,
     VIOLATION_NO_VEST,
     VIOLATION_NO_BELT,
@@ -127,13 +128,14 @@ def is_valid_fire_smoke_hazard(label: str, conf: float, bbox: List[float], frame
 
 class UnifiedDetector:
     """
-    Five-stage YOLO detector: Person -> PPE -> Environment -> Road Damage -> Fire/Smoke.
+    YOLO detector: Person -> PPE -> Environment -> Road Damage -> Fire/Smoke -> Vehicles.
 
     Stage 1: Person detection (yolov8n.pt / yolo26n.pt)
     Stage 2: PPE verification (best_stage2_labeled_safety.pt - 4 classes)
     Stage 3: Environment hazards (best_stage3_openhole.pt)
     Stage 4: Road damage (best_jalan_berlubang.pt)
     Stage 5: Fire & smoke hazards (fire_smoke.pt)
+    Vehicle: vehicle_best.pt
     """
 
     # PPE Classes (Stage 2)
@@ -148,7 +150,7 @@ class UnifiedDetector:
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         model_new = os.path.join(project_root, "model", "New")
 
-        print("[DETECTOR] Initializing UnifiedDetector (5-Stage Pipeline)...")
+        print("[DETECTOR] Initializing UnifiedDetector (5-Stage Pipeline + Vehicles)...")
         print(f"[DETECTOR] model_new={model_new}")
 
         # Stage 1: Person detection — yolo26n.pt lives in backend/
@@ -182,6 +184,15 @@ class UnifiedDetector:
         else:
             self.fire_smoke_model = YOLO(fire_smoke_path)
             print(f"[DETECTOR]   Stage 5 (Fire/Smoke) ✓ - Classes: {self.fire_smoke_model.names}")
+
+        # Vehicle detection
+        vehicle_path = os.path.join(model_new, "vehicle_best.pt")
+        if not os.path.exists(vehicle_path):
+            print("[DETECTOR]   Vehicle model — model not found, skipping")
+            self.vehicle_model = None
+        else:
+            self.vehicle_model = YOLO(vehicle_path)
+            print(f"[DETECTOR]   Vehicle         ✓ - Classes: {self.vehicle_model.names}")
 
         print("[DETECTOR] All models loaded successfully!")
         self.confidence = confidence
@@ -318,6 +329,37 @@ class UnifiedDetector:
 
         return people, env_hazards, road_damage, safety_cones
 
+    def detect_vehicles(self, frame: np.ndarray, photo_mode: bool = False) -> List[dict]:
+        """Run vehicle detection on the full frame."""
+        if self.vehicle_model is None:
+            return []
+
+        vehicle_conf = 0.30 if photo_mode else VEHICLE_CONFIDENCE_THRESHOLD
+        vehicles = []
+        vehicle_results = self.vehicle_model(frame, verbose=False, conf=vehicle_conf, device=DEVICE)
+
+        for r in vehicle_results:
+            if not r.boxes:
+                continue
+            for box in r.boxes:
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                cls_id = int(box.cls[0])
+                label = self.vehicle_model.names[cls_id]
+                conf = float(box.conf[0])
+
+                if conf < vehicle_conf:
+                    continue
+
+                vehicles.append({
+                    "bbox": [x1, y1, x2, y2],
+                    "label": label,
+                    "class_name": label,
+                    "class_id": cls_id,
+                    "confidence": conf,
+                })
+
+        return vehicles
+
     def detect_ppe_full_frame(self, frame: np.ndarray, people: List[dict]) -> List[dict]:
         """
         Run PPE detection on FULL IMAGE and assign detections to persons using IoU.
@@ -407,6 +449,7 @@ class MultiStagePipeline(UnifiedDetector):
     def run(self, frame: np.ndarray) -> dict:
         """Standard entry point - runs full detection pipeline."""
         people, env_hazards, road_damage, safety_cones = self.detect_base(frame)
+        vehicles = self.detect_vehicles(frame)
         if people:
             people = self.detect_ppe_full_frame(frame, people)
 
@@ -414,17 +457,20 @@ class MultiStagePipeline(UnifiedDetector):
             "persons": people,
             "env": env_hazards,
             "road": road_damage,
-            "safety_cones": safety_cones
+            "safety_cones": safety_cones,
+            "vehicles": vehicles,
         }
 
     def run_photo(self, frame: np.ndarray) -> dict:
         """Photo/image analysis — uses lower thresholds, no area/temporal filters."""
         people, env_hazards, road_damage, safety_cones = self.detect_base(frame, photo_mode=True)
+        vehicles = self.detect_vehicles(frame, photo_mode=True)
         if people:
             people = self.detect_ppe_full_frame(frame, people)
         return {
             "persons": people,
             "env": env_hazards,
             "road": road_damage,
-            "safety_cones": safety_cones
+            "safety_cones": safety_cones,
+            "vehicles": vehicles,
         }

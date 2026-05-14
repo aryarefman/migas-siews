@@ -13,6 +13,7 @@ COLOR_SAFE = (0, 255, 0)         # Green
 COLOR_WARNING = (0, 165, 255)     # Orange
 COLOR_INFO = (255, 165, 0)       # Cyan/Orange
 COLOR_HAZARD = (255, 0, 0)       # Blue
+COLOR_VEHICLE = (255, 0, 255)    # Magenta
 
 
 def draw_bounding_box(
@@ -160,6 +161,18 @@ def draw_safety_cones(frame: np.ndarray, safety_cones: List[dict], font_scale: f
         )
 
 
+def draw_vehicles(frame: np.ndarray, vehicles: List[dict], font_scale: float = 0.5):
+    """Draw vehicle detections."""
+    for vehicle in vehicles:
+        bbox = vehicle.get("bbox", [])
+        if len(bbox) != 4:
+            continue
+        label_text = vehicle.get("label", vehicle.get("class_name", "vehicle"))
+        conf = vehicle.get("confidence", 0)
+        label = f"VEHICLE: {label_text.upper()} {conf:.0%}"
+        draw_bounding_box(frame, bbox, label, COLOR_VEHICLE, thickness=2, font_scale=font_scale)
+
+
 def draw_zones(frame: np.ndarray, zones: List[dict]):
     """Draw zone polygons on the frame."""
     from polygon import point_in_polygon, compute_centroid
@@ -218,6 +231,7 @@ def draw_detections(
     hazards: List[dict],
     road: List[dict] = None,
     safety_cones: List[dict] = None,
+    vehicles: List[dict] = None,
 ):
     """
     Draw all detection types on the frame.
@@ -226,6 +240,10 @@ def draw_detections(
     # Safety cones first (green, lowest priority)
     if safety_cones:
         draw_safety_cones(frame, safety_cones)
+
+    # Vehicles (magenta)
+    if vehicles:
+        draw_vehicles(frame, vehicles)
 
     # Road damage (orange)
     if road:

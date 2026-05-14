@@ -45,6 +45,7 @@ SERVICE_DIR = Path(MODEL_BASE)
 # PPE Detection threshold - standardized across all endpoints
 PPE_VIOLATION_THRESHOLD = 0.35
 FIRE_SMOKE_THRESHOLD = 0.40
+VEHICLE_THRESHOLD = 0.40
 
 
 def calculate_iou(box1, box2):
@@ -169,6 +170,27 @@ def detect_env_hazards(img):
 
     return env
 
+
+def detect_vehicles(img, confidence=VEHICLE_THRESHOLD):
+    """Run vehicle detection and return vehicle detections."""
+    vehicles = []
+    for r in model_vehicle(img, verbose=False, conf=confidence):
+        if r.boxes is None:
+            continue
+        for box in r.boxes:
+            cls_id = int(box.cls[0])
+            cls_name = VEHICLE_CLASSES.get(cls_id, f"cls_{cls_id}")
+            conf = float(box.conf[0])
+            x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
+            vehicles.append({
+                "class_id": cls_id,
+                "class_name": cls_name,
+                "label": cls_name,
+                "confidence": conf,
+                "bbox": [x1, y1, x2, y2],
+            })
+    return vehicles
+
 # Load all models
 print("[Inference] Loading models...")
 print(f"  - S1 person: yolo26n.pt")
@@ -181,6 +203,8 @@ print(f"  - S5 jalan berlubang: {MODELS_DIR / 'best_jalan_berlubang.pt'}")
 model_s5 = YOLO(MODELS_DIR / 'best_jalan_berlubang.pt')
 print(f"  - Fire/smoke: {MODELS_DIR / 'fire_smoke.pt'}")
 model_fire_smoke = YOLO(MODELS_DIR / "fire_smoke.pt")
+print(f"  - Vehicle: {MODELS_DIR / 'vehicle_best.pt'}")
+model_vehicle = YOLO(MODELS_DIR / "vehicle_best.pt")
 print("[Inference] All models loaded successfully")
 
 # Initialize EasyOCR reader
@@ -285,17 +309,19 @@ PPE_CLASSES = {
 ENV_CLASSES = {0: "barricade", 1: "hard-hat", 2: "safety-cone", 3: "open-hole", 4: "vest"}
 ROAD_CLASSES = {0: "lubang", 1: "retak", 2: "tambalan"}  # Model only has 3 classes
 FIRE_SMOKE_CLASSES = {0: "fire", 1: "smoke"}
+VEHICLE_CLASSES = {0: "Truck", 1: "coupe", 2: "hatchback", 3: "pickup", 4: "sedan", 5: "suv", 6: "truck"}
 
 
 class DetectionRequest(BaseModel):
     image_b64: str  # Base64 encoded image
-    stages: List[str] = ["s1", "s2", "s3", "s5"]  # Which stages to run
+    stages: List[str] = ["s1", "s2", "s3", "s5", "vehicle"]  # Which stages to run
 
 
 class DetectionResponse(BaseModel):
     persons: List[Dict]
     env: List[Dict]
     road: List[Dict]
+    vehicles: List[Dict] = []
 
 
 @app.post("/detect", response_model=DetectionResponse)
@@ -355,11 +381,15 @@ async def detect(req: DetectionRequest):
                         "bbox": [x1, y1, x2, y2],
                     })
             results["road"] = road
+
+        if "vehicle" in req.stages or "vehicles" in req.stages:
+            results["vehicles"] = detect_vehicles(img)
         
         return DetectionResponse(
             persons=results.get("persons", []),
             env=results.get("env", []),
             road=results.get("road", []),
+            vehicles=results.get("vehicles", []),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Inference error: {str(e)}")
@@ -435,6 +465,15 @@ def get_webcam_frame():
             cls_name = det.get("class_name", "")
             conf = det.get("confidence", 0)
             color = (0, 0, 255) if det.get("category") == "fire_smoke" else (255, 0, 0)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(frame, f"{cls_name} {conf:.2f}", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+        # Vehicle detection
+        for det in detect_vehicles(frame):
+            x1, y1, x2, y2 = det["bbox"]
+            cls_name = det.get("class_name", "vehicle")
+            conf = det.get("confidence", 0)
+            color = (255, 0, 255)
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             cv2.putText(frame, f"{cls_name} {conf:.2f}", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
         
@@ -554,6 +593,9 @@ async def analyze_image(req: DetectionRequest):
                         "bbox": [x1, y1, x2, y2],
                     })
             results["road"] = road
+
+        if "vehicle" in req.stages or "vehicles" in req.stages:
+            results["vehicles"] = detect_vehicles(img)
         
         # Draw detections on image
         annotated = img.copy()
@@ -589,6 +631,14 @@ async def analyze_image(req: DetectionRequest):
                 color = (0, 255, 0)
             cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
             cv2.putText(annotated, f"{cls} {det.get('confidence', 0):.2f}", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+        # Draw vehicles with labels
+        for det in results.get("vehicles", []):
+            x1, y1, x2, y2 = det["bbox"]
+            cls = det.get("class_name", "vehicle")
+            color = (255, 0, 255)
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(annotated, f"{cls} {det.get('confidence', 0):.2f}", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
         
         # Encode annotated image
         _, buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 88])
@@ -622,6 +672,16 @@ async def analyze_image(req: DetectionRequest):
             }
             for r in results.get("road", [])
         ]
+
+        vehicle_list = [
+            {
+                "label": v.get("class_name", v.get("label", "")),
+                "confidence": round(v.get("confidence", 0), 3),
+                "bbox": v.get("bbox", []),
+                "class_id": v.get("class_id"),
+            }
+            for v in results.get("vehicles", [])
+        ]
         
         violation_indices = {i for i, p in enumerate(results.get("persons", [])) if p.get("ppe_violations")}
         
@@ -632,9 +692,11 @@ async def analyze_image(req: DetectionRequest):
                 "persons": person_list,
                 "env": env_list,
                 "road": road_list,
+                "vehicles": vehicle_list,
                 "total_persons": len(person_list),
                 "total_env": len(env_list),
                 "total_road": len(road_list),
+                "total_vehicles": len(vehicle_list),
                 "violations_found": bool(violation_indices),
             }
         }

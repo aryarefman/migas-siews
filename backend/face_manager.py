@@ -164,59 +164,30 @@ class FaceManager:
         Args:
             frame:         Full frame (BGR)
             person_bboxes: Optional list of [x1, y1, x2, y2] person bounding boxes
-                           If provided, only search within these boxes
+                           If provided, returns exactly one result per bbox (matched or empty dict)
 
         Returns:
-            List of dicts: [{name, code, confidence, bbox, face_id}]
+            List of dicts (same length as person_bboxes):
+            [{name, code, confidence, bbox, face_id}] or {} if no face found
         """
         if not self._registered:
-            return []
-
-        results = []
+            return [{} for _ in (person_bboxes or [])]
 
         if FACE_ENGINE == "dlib":
-            results = self._recognize_dlib(frame, person_bboxes)
+            return self._recognize_dlib_per_person(frame, person_bboxes)
         else:
-            results = self._recognize_opencv(frame, person_bboxes)
+            return self._recognize_opencv_per_person(frame, person_bboxes)
 
-        return results
-
-    def _recognize_dlib(self, frame: np.ndarray, person_bboxes: List[list] = None) -> List[dict]:
-        """Recognize using dlib face_recognition."""
+    def _recognize_dlib_per_person(self, frame: np.ndarray, person_bboxes: List[list] = None) -> List[dict]:
+        """Recognize using dlib — returns one result per person bbox."""
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        rgb = np.ascontiguousarray(rgb, dtype=np.uint8)
 
-        # Detect faces
-        if person_bboxes:
-            # Search only within person bounding boxes for efficiency
-            all_results = []
-            for bbox in person_bboxes:
-                x1, y1, x2, y2 = [max(0, int(v)) for v in bbox]
-                crop = rgb[y1:y2, x1:x2]
-                if crop.size == 0:
-                    continue
-
-                locations = fr.face_locations(crop, model="hog")
-                if not locations:
-                    continue
-
-                encodings = fr.face_encodings(crop, locations)
-                for i, enc in enumerate(encodings):
-                    match = self._match_encoding_dlib(enc)
-                    top, right, bottom, left = locations[i]
-                    all_results.append({
-                        "name": match["name"] if match else "Unknown",
-                        "code": match["code"] if match else "",
-                        "confidence": match["confidence"] if match else 0.0,
-                        "face_id": match["id"] if match else None,
-                        "bbox": [x1 + left, y1 + top, x1 + right, y1 + bottom],
-                    })
-            return all_results
-        else:
-            # Full frame detection
+        if not person_bboxes:
+            # Full frame mode — return all detected faces
             locations = fr.face_locations(rgb, model="hog")
             if not locations:
                 return []
-
             encodings = fr.face_encodings(rgb, locations)
             results = []
             for i, enc in enumerate(encodings):
@@ -230,6 +201,111 @@ class FaceManager:
                     "bbox": [left, top, right, bottom],
                 })
             return results
+
+        # Per-person mode: one result per bbox
+        results = []
+        for bbox in person_bboxes:
+            x1, y1, x2, y2 = [max(0, int(v)) for v in bbox]
+            h, w = frame.shape[:2]
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(w, x2), min(h, y2)
+            
+            crop = rgb[y1:y2, x1:x2]
+            if crop.size == 0 or crop.shape[0] < 20 or crop.shape[1] < 20:
+                results.append({})
+                continue
+
+            # Focus on upper body (head area) for better face detection
+            head_h = min(int((y2 - y1) * 0.45), crop.shape[0])
+            head_crop = crop[:head_h, :]
+
+            locations = fr.face_locations(head_crop, model="hog")
+            if not locations:
+                # Try full person crop as fallback
+                locations = fr.face_locations(crop, model="hog")
+                if not locations:
+                    results.append({})
+                    continue
+                # Use full crop for encoding
+                used_crop = crop
+            else:
+                used_crop = head_crop
+
+            # Ensure crop is contiguous uint8 for dlib
+            used_crop = np.ascontiguousarray(used_crop, dtype=np.uint8)
+            encodings = fr.face_encodings(used_crop, locations)
+            if not encodings:
+                results.append({})
+                continue
+
+            # Use the first (largest/most confident) face in this person's bbox
+            match = self._match_encoding_dlib(encodings[0])
+            top, right, bottom, left = locations[0]
+            results.append({
+                "name": match["name"] if match else "Unknown",
+                "code": match["code"] if match else "",
+                "confidence": match["confidence"] if match else 0.0,
+                "face_id": match["id"] if match else None,
+                "bbox": [x1 + left, y1 + top, x1 + right, y1 + bottom],
+            })
+
+        return results
+
+    def _recognize_opencv_per_person(self, frame: np.ndarray, person_bboxes: List[list] = None) -> List[dict]:
+        """Fallback recognition using OpenCV — returns one result per person bbox."""
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if self._haar_cascade is None:
+            cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+            self._haar_cascade = cv2.CascadeClassifier(cascade_path)
+
+        if not person_bboxes:
+            faces = self._haar_cascade.detectMultiScale(gray, 1.3, 5)
+            results = []
+            for (x, y, w, h) in faces:
+                face_crop = gray[y:y+h, x:x+w]
+                face_resized = cv2.resize(face_crop, (128, 128))
+                hist = cv2.calcHist([face_resized], [0], None, [128], [0, 256])
+                hist = cv2.normalize(hist, hist).flatten()
+                match = self._match_encoding_opencv(hist)
+                results.append({
+                    "name": match["name"] if match else "Unknown",
+                    "code": match["code"] if match else "",
+                    "confidence": match["confidence"] if match else 0.0,
+                    "face_id": match["id"] if match else None,
+                    "bbox": [x, y, x + w, y + h],
+                })
+            return results
+
+        # Per-person mode
+        results = []
+        for bbox in person_bboxes:
+            x1, y1, x2, y2 = [max(0, int(v)) for v in bbox]
+            region = gray[y1:y2, x1:x2]
+            if region.size == 0:
+                results.append({})
+                continue
+
+            faces = self._haar_cascade.detectMultiScale(region, 1.3, 5)
+            if len(faces) == 0:
+                results.append({})
+                continue
+
+            # Use largest face
+            x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+            face_crop = region[y:y+h, x:x+w]
+            face_resized = cv2.resize(face_crop, (128, 128))
+            hist = cv2.calcHist([face_resized], [0], None, [128], [0, 256])
+            hist = cv2.normalize(hist, hist).flatten()
+            match = self._match_encoding_opencv(hist)
+            results.append({
+                "name": match["name"] if match else "Unknown",
+                "code": match["code"] if match else "",
+                "confidence": match["confidence"] if match else 0.0,
+                "face_id": match["id"] if match else None,
+                "bbox": [x1 + x, y1 + y, x1 + x + w, y1 + y + h],
+            })
+
+        return results
 
     def _match_encoding_dlib(self, encoding: np.ndarray) -> Optional[dict]:
         """Find best match from registered faces using dlib encodings."""
@@ -259,42 +335,6 @@ class FaceManager:
                 "confidence": round(confidence, 3),
             }
         return None
-
-    def _recognize_opencv(self, frame: np.ndarray, person_bboxes: List[list] = None) -> List[dict]:
-        """Fallback recognition using OpenCV histogram matching."""
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        if self._haar_cascade is None:
-            cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-            self._haar_cascade = cv2.CascadeClassifier(cascade_path)
-
-        search_regions = []
-        if person_bboxes:
-            for bbox in person_bboxes:
-                x1, y1, x2, y2 = [max(0, int(v)) for v in bbox]
-                search_regions.append((gray[y1:y2, x1:x2], x1, y1))
-        else:
-            search_regions.append((gray, 0, 0))
-
-        results = []
-        for region, offset_x, offset_y in search_regions:
-            if region.size == 0:
-                continue
-            faces = self._haar_cascade.detectMultiScale(region, 1.3, 5)
-            for (x, y, w, h) in faces:
-                face_crop = region[y:y+h, x:x+w]
-                face_resized = cv2.resize(face_crop, (128, 128))
-                hist = cv2.calcHist([face_resized], [0], None, [128], [0, 256])
-                hist = cv2.normalize(hist, hist).flatten()
-
-                match = self._match_encoding_opencv(hist)
-                results.append({
-                    "name": match["name"] if match else "Unknown",
-                    "code": match["code"] if match else "",
-                    "confidence": match["confidence"] if match else 0.0,
-                    "face_id": match["id"] if match else None,
-                    "bbox": [offset_x + x, offset_y + y, offset_x + x + w, offset_y + y + h],
-                })
-        return results
 
     def _match_encoding_opencv(self, hist: np.ndarray) -> Optional[dict]:
         """Match using histogram correlation."""

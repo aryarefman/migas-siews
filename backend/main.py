@@ -34,6 +34,7 @@ from drawing import (
     draw_persons,
     draw_road_damage,
     draw_safety_cones,
+    draw_vehicles,
 )
 from detection_models import FIRE_SMOKE_LABELS
 
@@ -544,7 +545,9 @@ def _run_pipeline_sync(frame: np.ndarray):
         with stream_manager._result_lock:
             stream_manager._last_result["persons"] = result["persons"]
             stream_manager._last_result["env"] = result.get("env", [])
+            stream_manager._last_result["vehicles"] = result.get("vehicles", [])
         draw_persons(frame, result["persons"], set())
+        draw_vehicles(frame, result.get("vehicles", []))
     except Exception as e:
         print(f"[WS-CAMERA] Pipeline error: {e}")
 
@@ -821,6 +824,7 @@ async def analyze_image(file: UploadFile = File(...)):
     env_detections = result.get("env", [])
     road_detections = result.get("road", [])
     safety_cones = result.get("safety_cones", [])
+    vehicles = result.get("vehicles", [])
 
     # Add face/OCR identity to static image analysis as well.
     from ocr_engine import ocr_engine
@@ -854,6 +858,7 @@ async def analyze_image(file: UploadFile = File(...)):
     draw_env_hazards(annotated, env_detections)
     draw_road_damage(annotated, road_detections)
     draw_safety_cones(annotated, safety_cones)
+    draw_vehicles(annotated, vehicles)
 
     # Encode annotated image to base64
     import base64
@@ -901,6 +906,16 @@ async def analyze_image(file: UploadFile = File(...)):
         for s in safety_cones
     ]
 
+    vehicle_list = [
+        {
+            "label": v.get("class_name", v.get("label", "")),
+            "confidence": round(v.get("confidence", 0), 3),
+            "bbox": v.get("bbox", []),
+            "class_id": v.get("class_id"),
+        }
+        for v in vehicles
+    ]
+
     hazard_violation_found = any(
         (e.get("category") == "fire_smoke")
         or (e.get("label") or e.get("class_name") or "").lower() in FIRE_SMOKE_LABELS
@@ -916,10 +931,12 @@ async def analyze_image(file: UploadFile = File(...)):
             "env": env_list,
             "road": road_list,
             "safety_cones": safety_cone_list,
+            "vehicles": vehicle_list,
             "total_persons": len(persons),
             "total_env": len(env_detections),
             "total_road": len(road_detections),
             "total_safety_cones": len(safety_cones),
+            "total_vehicles": len(vehicles),
             "violations_found": bool(violation_indices) or hazard_violation_found,
         },
     }

@@ -42,6 +42,17 @@ class FireSmokeClass(Enum):
     SMOKE = 1
 
 
+class VehicleClass(Enum):
+    """Vehicle Stage - vehicle_best.pt"""
+    TRUCK_UPPER = 0
+    COUPE = 1
+    HATCHBACK = 2
+    PICKUP = 3
+    SEDAN = 4
+    SUV = 5
+    TRUCK = 6
+
+
 # =============================================================================
 # Detection Result Dataclasses
 # =============================================================================
@@ -114,12 +125,22 @@ class SafetyConeDetection:
 
 
 @dataclass
+class VehicleDetection:
+    """Result of vehicle detection."""
+    bbox: List[float]
+    label: str
+    class_name: str
+    confidence: float
+
+
+@dataclass
 class DetectionResult:
     """Combined result from all detection stages."""
     persons: List[PersonDetection] = field(default_factory=list)
     env: List[EnvDetection] = field(default_factory=list)
     road: List[RoadDetection] = field(default_factory=list)
     safety_cones: List[SafetyConeDetection] = field(default_factory=list)
+    vehicles: List[VehicleDetection] = field(default_factory=list)
 
     def to_dict(self) -> Dict:
         return {
@@ -161,6 +182,15 @@ class DetectionResult:
                 }
                 for s in self.safety_cones
             ],
+            "vehicles": [
+                {
+                    "bbox": v.bbox,
+                    "label": v.label,
+                    "class_name": v.class_name,
+                    "confidence": v.confidence,
+                }
+                for v in self.vehicles
+            ],
         }
 
 
@@ -177,6 +207,7 @@ SAFETY_CONE_CONFIDENCE = 0.50      # Safety cone minimum (higher to reduce FP)
 FIRE_SMOKE_CONFIDENCE_THRESHOLD = 0.65  # YOLO-level filter for live stream
 FIRE_CONFIDENCE_THRESHOLD = 0.70        # Post-filter for fire
 SMOKE_CONFIDENCE_THRESHOLD = 0.70       # Post-filter for smoke (very prone to FP indoors)
+VEHICLE_CONFIDENCE_THRESHOLD = 0.40     # Vehicle detection
 FIRE_SMOKE_LABELS = {"fire", "smoke"}
 ENV_HAZARD_LABELS = {"open-hole", "barricade"}
 OPEN_HOLE_CONFIDENCE_THRESHOLD = 0.88
@@ -222,6 +253,14 @@ def get_fire_smoke_class_name(cls_id: int) -> str:
     """Get fire/smoke class name from class ID."""
     try:
         return FireSmokeClass(cls_id).name.lower()
+    except ValueError:
+        return f"cls_{cls_id}"
+
+
+def get_vehicle_class_name(cls_id: int) -> str:
+    """Get vehicle class name from class ID."""
+    try:
+        return VehicleClass(cls_id).name.lower()
     except ValueError:
         return f"cls_{cls_id}"
 

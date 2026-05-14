@@ -196,7 +196,7 @@ class StreamManager:
 
         # Latest detection results (written by inference thread, read by async loop)
         self._last_result: dict = {
-            "persons": [], "env": [], "road": [], "safety_cones": []
+            "persons": [], "env": [], "road": [], "safety_cones": [], "vehicles": []
         }
         self._result_lock = threading.Lock()
 
@@ -409,6 +409,7 @@ class StreamManager:
             try:
                 h, w = frame.shape[:2]
                 persons, env_hazards, road, safety_cones = self.detector.detect_base(frame)
+                vehicles = self.detector.detect_vehicles(frame)
 
                 if persons:
                     persons = self.detector.detect_ppe_full_frame(frame, persons)
@@ -418,7 +419,7 @@ class StreamManager:
                     for i, det in enumerate(persons):
                         det["face_name"] = "Unknown"
                         det["ocr_code"] = None
-                        if i < len(face_results):
+                        if i < len(face_results) and face_results[i]:
                             det["face_name"] = face_results[i].get("name", "Unknown")
                         if i < len(ocr_results) and ocr_results[i]:
                             det["ocr_code"] = ocr_results[i].get("code")
@@ -439,6 +440,7 @@ class StreamManager:
                     "env": env_hazards,
                     "road": road,
                     "safety_cones": safety_cones,
+                    "vehicles": vehicles,
                     "frame": frame,
                     "w": w,
                     "h": h,
@@ -460,7 +462,7 @@ class StreamManager:
                     except queue.Full:
                         pass
 
-                if persons or env_hazards or road or safety_cones:
+                if persons or env_hazards or road or safety_cones or vehicles:
                     # Log PPE status for debugging
                     for p in persons:
                         ppe = p.get("ppe_result", {})
@@ -469,7 +471,7 @@ class StreamManager:
                             print(f"[DETECTOR] Person '{p.get('face_name','?')}' PPE violations: {viols}")
                     print(f"[DETECTOR] Detected: {len(persons)} people, "
                           f"{len(env_hazards)} env, {len(road)} road, "
-                          f"{len(safety_cones)} safety-cones")
+                          f"{len(safety_cones)} safety-cones, {len(vehicles)} vehicles")
 
             except Exception as e:
                 print(f"[INFERENCE] Error: {e}")
@@ -674,6 +676,7 @@ class StreamManager:
         _last_env = []
         _last_road = []
         _last_safety_cones = []
+        _last_vehicles = []
         _last_zones = []
         _last_violations = []
 
@@ -698,6 +701,7 @@ class StreamManager:
                     env_hazards = result["env"]
                     road = result["road"]
                     safety_cones = result["safety_cones"]
+                    vehicles = result.get("vehicles", [])
                     w, h = result["w"], result["h"]
 
                     # Update last known state
@@ -705,6 +709,7 @@ class StreamManager:
                     _last_env = env_hazards
                     _last_road = road
                     _last_safety_cones = safety_cones
+                    _last_vehicles = vehicles
                     _last_zones = self.get_active_zones()
 
                     # Check violations on new result
@@ -720,10 +725,10 @@ class StreamManager:
                 if raw is not None:
                     display = raw.copy()
                     draw_zones(display, _last_zones)
-                    if _last_persons or _last_env or _last_road or _last_safety_cones:
+                    if _last_persons or _last_env or _last_road or _last_safety_cones or _last_vehicles:
                         violation_indices = self.violation_checker.get_violation_indices(_last_persons, _last_violations)
                         draw_detections(display, _last_persons, violation_indices,
-                                        _last_env, _last_road, _last_safety_cones)
+                                        _last_env, _last_road, _last_safety_cones, _last_vehicles)
                     _, jpeg = cv2.imencode('.jpg', display, [cv2.IMWRITE_JPEG_QUALITY, 85])
                     self.frame = jpeg.tobytes()
 

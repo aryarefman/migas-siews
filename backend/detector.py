@@ -279,8 +279,8 @@ class UnifiedDetector:
                 })
 
         # Stage 5: Fire & smoke hazards (optional model)
-        # Photo mode uses lower threshold — no live-stream noise to worry about
-        fs_conf = 0.25 if photo_mode else FIRE_SMOKE_CONFIDENCE_THRESHOLD
+        # Photo mode: use moderate threshold — too low causes clouds/haze false positives
+        fs_conf = 0.50 if photo_mode else FIRE_SMOKE_CONFIDENCE_THRESHOLD
         fire_smoke_results = self.fire_smoke_model(
             frame, verbose=False, conf=fs_conf, device=DEVICE
         ) if self.fire_smoke_model is not None else []
@@ -294,9 +294,18 @@ class UnifiedDetector:
                 conf = float(box.conf[0])
                 bbox = [x1, y1, x2, y2]
 
-                # In photo mode skip area filter — static images can have small fire/smoke
                 if photo_mode:
                     if label.lower() not in FIRE_SMOKE_LABELS:
+                        continue
+                    # Photo mode: reject detections that are likely clouds/sky
+                    # Clouds typically: top of frame, very large area, low confidence
+                    area_ratio = bbox_area_ratio(bbox, frame)
+                    center_y = bbox_center_y_ratio(bbox, frame)
+                    # If detection covers >40% of frame → probably sky/clouds
+                    if area_ratio > 0.40:
+                        continue
+                    # If smoke is in top 25% of frame and covers >20% → likely clouds
+                    if label.lower() == "smoke" and center_y < 0.25 and area_ratio > 0.20:
                         continue
                 elif not is_valid_fire_smoke_hazard(label, conf, bbox, frame):
                     continue
@@ -334,7 +343,7 @@ class UnifiedDetector:
         if self.vehicle_model is None:
             return []
 
-        vehicle_conf = 0.30 if photo_mode else VEHICLE_CONFIDENCE_THRESHOLD
+        vehicle_conf = 0.25 if photo_mode else VEHICLE_CONFIDENCE_THRESHOLD
         vehicles = []
         vehicle_results = self.vehicle_model(frame, verbose=False, conf=vehicle_conf, device=DEVICE)
 

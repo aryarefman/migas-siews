@@ -22,10 +22,11 @@ export async function POST(req: NextRequest) {
         { status: res.status || 500 }
       );
     }
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error("[PROXY] Analyze error:", err);
+    const message = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json(
-      { detail: `Proxy error: ${err.message}` },
+      { detail: `Proxy error: ${message}` },
       { status: 502 }
     );
   }

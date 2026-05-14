@@ -31,6 +31,7 @@ interface FrameDetection {
     class_name: string;
     confidence: number;
     bbox: number[];
+    category?: string;
   }[];
 }
 
@@ -407,7 +408,7 @@ export default function VideoAnalysisPage() {
                                 </span>
                               ))}
                               {frame.env.map((d, i) => (
-                                <span key={i} className="text-[9px] font-bold text-orange-400 uppercase">
+                                <span key={i} className={`text-[9px] font-bold uppercase ${d.category === "fire_smoke" ? "text-red-400" : "text-orange-400"}`}>
                                   {d.class_name} {(d.confidence * 100).toFixed(0)}%
                                 </span>
                               ))}

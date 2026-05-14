@@ -7,6 +7,7 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
 interface Detection {
   label: string;
   class_name?: string;
+  category?: string;
   confidence: number;
   bbox: number[];
 }
@@ -122,7 +123,8 @@ export default function AnalyzePage() {
             Upload foto untuk dianalisis oleh model aktif:{" "}
             <span className="text-green-400 font-semibold">S1 Person</span> +{" "}
             <span className="text-amber-400 font-semibold">S2 PPE</span> +{" "}
-            <span className="text-cyan-400 font-semibold">S3 Open Hole</span>
+            <span className="text-cyan-400 font-semibold">S3 Open Hole</span> +{" "}
+            <span className="text-red-400 font-semibold">Fire/Smoke</span>
           </p>
         </div>
 
@@ -191,7 +193,7 @@ export default function AnalyzePage() {
                 </p>
                 <p className="text-sm text-slate-400">
                   {result.detections.total_persons} orang terdeteksi ·{" "}
-                  {result.detections.total_env} objek konstruksi ·{" "}
+                  {result.detections.total_env} hazard/objek ·{" "}
                   {result.detections.total_road ?? 0} kerusakan jalan ·{" "}
                   {result.image_size.width}×{result.image_size.height}px
                 </p>
@@ -290,7 +292,7 @@ export default function AnalyzePage() {
               {/* Environment */}
               <div className="bg-slate-800/60 border border-slate-700 rounded-xl p-4 space-y-3">
                 <h3 className="font-black text-sm uppercase tracking-widest text-cyan-400">
-                  🏗️ Objek Konstruksi ({result.detections.total_env})
+                  🏗️ Hazard & Objek ({result.detections.total_env})
                 </h3>
                 {envDetections.length === 0 ? (
                   <p className="text-slate-500 text-sm">Tidak ada objek terdeteksi</p>
@@ -305,9 +307,11 @@ export default function AnalyzePage() {
                       "safety-cone": "🟧 Kerucut Safety",
                       "vest": "🦺 Rompi Keselamatan",
                       "open_hole": "🚨 Lubang Terbuka",
+                      "fire": "🔥 Api",
+                      "smoke": "💨 Asap",
                     };
                     const displayLabel = labelMap[rawLabel] || rawLabel.replace(/-/g, " ").replace(/_/g, " ").toUpperCase() || "OBJEK";
-                    const isDangerous = rawLabel === "open-hole" || rawLabel === "open_hole";
+                    const isDangerous = rawLabel === "open-hole" || rawLabel === "open_hole" || d.category === "fire_smoke";
 
                     return (
                       <div

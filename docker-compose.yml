@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./model:/app/model:ro
+      - ./backend/static:/app/backend/static
+      - siews-data:/app/data
+    devices:
+      - /dev/video0:/dev/video0
+    environment:
+      - MODEL_BASE=/app
+      - DATABASE_URL=sqlite:////app/data/siews.db
+      - INFERENCE_URL=http://inference:8001
+      - CAMERA_SOURCE=0
+    depends_on:
+      inference:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  inference:
+    build:
+      context: .
+      dockerfile: inference-service/Dockerfile
+    ports:
+      - "8002:8001"
+    volumes:
+      - ./model:/app/model:ro
+    environment:
+      - MODEL_BASE=/app
+      - GO_BACKEND_URL=http://backend:8001
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8001
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  siews-data:

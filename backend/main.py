@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import shutil
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -34,6 +35,7 @@ from drawing import (
     draw_road_damage,
     draw_safety_cones,
 )
+from detection_models import FIRE_SMOKE_LABELS
 
 # ─── App Setup ────────────────────────────────────────────────
 app = FastAPI(
@@ -74,8 +76,17 @@ def health_check():
         "status": "ok",
         "models_loaded": stream_manager.detector is not None,
         "pipeline_loaded": stream_manager.pipeline is not None,
-        "camera_status": "offline"
+        "camera_status": stream_manager.camera_status(),
+        **stream_manager.camera_info(),
     }
+
+
+@app.post("/camera/reconnect")
+async def camera_reconnect():
+    """Manually trigger camera reconnect."""
+    from stream import stream_manager
+    stream_manager.request_camera_reconnect("manual_api")
+    return {"status": "reconnecting", "message": "Camera reconnect triggered"}
 
 
 # ─── Quick Image Analysis (Testing) ──────────────────────────
@@ -93,7 +104,7 @@ async def analyze_uploaded_image(file: UploadFile = File(...), db: Session = Dep
             stream_manager.init_detector()
 
         # 1. Pipeline Run
-        result = stream_manager.detector.run(frame)
+        result = stream_manager.detector.run_photo(frame)
         persons = result["persons"]
         hazards = result.get("env", [])
 
@@ -104,11 +115,12 @@ async def analyze_uploaded_image(file: UploadFile = File(...), db: Session = Dep
         person_bboxes = [p["bbox"] for p in persons]
         face_results = face_manager.recognize_faces(frame, person_bboxes)
         
-        # Per-person OCR
+        # Per-person OCR. Avoid full-frame fallback here so background text
+        # is not assigned to the wrong person.
         ocr_results = ocr_engine.read_all_codes(frame, person_bboxes)
-        
-        # Full-frame multi-code scan (finds ALL codes in the image)
-        all_codes = ocr_engine.read_all_codes_multi(frame)
+
+        # Multi-code scan is limited to detected person torso crops.
+        all_codes = ocr_engine.read_all_codes_multi(frame, person_bboxes)
         matched_codes = set()
 
         # Assign identity to each detected person
@@ -129,7 +141,7 @@ async def analyze_uploaded_image(file: UploadFile = File(...), db: Session = Dep
                         det["face_name"] = p_reg["name"]
                         break
 
-        # Add extra detections for codes NOT already matched to a person
+        # Add extra OCR detections only when they came from person crops.
         for code_entry in all_codes:
             if code_entry["code"] not in matched_codes:
                 name = "Unknown"
@@ -384,7 +396,7 @@ def resolve_alert(alert_id: int, db: Session = Depends(get_db)):
 
 @app.post("/alerts/{alert_id}/false-positive")
 def mark_false_positive(alert_id: int, req: FalsePositiveRequest, db: Session = Depends(get_db)):
-    """Mark an alert as false positive and resolve it."""
+    """Mark an alert as false positive and resolve it. Also raises adaptive threshold."""
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
@@ -394,7 +406,32 @@ def mark_false_positive(alert_id: int, req: FalsePositiveRequest, db: Session = 
         {"is_false_positive": True}
     )
     db.commit()
-    return {"status": "marked_false_positive", "id": alert_id}
+
+    # Adaptive threshold: raise threshold for the class that caused this FP
+    from stream import stream_manager
+    violation_type = alert.violation_type or ""
+    zone_name = ""
+    try:
+        from models import Zone as ZoneModel
+        z = db.query(ZoneModel).filter(ZoneModel.id == alert.zone_id).first()
+        zone_name = z.name.lower() if z else ""
+    except Exception:
+        pass
+
+    # Determine which class label to penalize
+    if "smoke" in zone_name or "smoke" in violation_type:
+        class_label = "smoke"
+    elif "fire" in zone_name or "fire" in violation_type:
+        class_label = "fire"
+    elif "ppe" in violation_type or "helmet" in zone_name or "vest" in zone_name:
+        class_label = "ppe_violation"
+    else:
+        class_label = violation_type or "unknown"
+
+    from stream import report_false_positive
+    report_false_positive(class_label)
+
+    return {"status": "marked_false_positive", "id": alert_id, "adjusted_class": class_label}
 
 
 @app.get("/alerts/{alert_id}/detections")
@@ -504,8 +541,9 @@ def _run_pipeline_sync(frame: np.ndarray):
 
     try:
         result = stream_manager.pipeline.run(frame)
-        stream_manager._last_persons = result["persons"]
-        stream_manager._last_hazards = result.get("env", [])
+        with stream_manager._result_lock:
+            stream_manager._last_result["persons"] = result["persons"]
+            stream_manager._last_result["env"] = result.get("env", [])
         draw_persons(frame, result["persons"], set())
     except Exception as e:
         print(f"[WS-CAMERA] Pipeline error: {e}")
@@ -516,13 +554,21 @@ def _run_pipeline_sync(frame: np.ndarray):
 @app.websocket("/ws/camera")
 async def websocket_camera(websocket: WebSocket):
     """Receive JPEG frames from browser camera, run AI detection, return annotated frame.
-    Uses thread executor so YOLO inference doesn't block the async event loop."""
+    Uses thread executor so YOLO inference doesn't block the async event loop.
+    Auto-reconnect on pipeline failure after exponential backoff."""
     await websocket.accept()
     print("[WS-CAMERA] Browser camera connected")
 
     loop = asyncio.get_event_loop()
     frame_idx = 0
     processing = False  # backpressure: skip if previous inference still running
+
+    # Reconnect state for browser camera pipeline failures
+    _pipeline_failures = 0
+    _next_retry_at = 0.0
+
+    def _retry_delay() -> float:
+        return min(30.0, 2.0 + (_pipeline_failures * 2.0))
 
     try:
         while True:
@@ -547,6 +593,17 @@ async def websocket_camera(websocket: WebSocket):
                     )
                     _, jpeg = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 80])
                     await websocket.send_bytes(jpeg.tobytes())
+                    _pipeline_failures = 0  # reset on success
+                except Exception as e:
+                    print(f"[WS-CAMERA] Inference error: {e}")
+                    _pipeline_failures += 1
+                    if time.time() >= _next_retry_at:
+                        _next_retry_at = time.time() + _retry_delay()
+                        print(f"[WS-CAMERA] Reinitializing pipeline, attempt {_pipeline_failures}")
+                        try:
+                            stream_manager.init_pipeline()
+                        except Exception as pe:
+                            print(f"[WS-CAMERA] Pipeline reinit failed: {pe}")
                 finally:
                     processing = False
 
@@ -756,7 +813,7 @@ async def analyze_image(file: UploadFile = File(...)):
     try:
         import asyncio
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, detector.run, frame.copy())
+        result = await loop.run_in_executor(None, detector.run_photo, frame.copy())
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Detection error: {e}")
 
@@ -764,6 +821,28 @@ async def analyze_image(file: UploadFile = File(...)):
     env_detections = result.get("env", [])
     road_detections = result.get("road", [])
     safety_cones = result.get("safety_cones", [])
+
+    # Add face/OCR identity to static image analysis as well.
+    from ocr_engine import ocr_engine
+    person_bboxes = [p.get("bbox", []) for p in persons]
+    face_results = face_manager.recognize_faces(frame, person_bboxes)
+    ocr_results = ocr_engine.read_all_codes(frame, person_bboxes)
+
+    for i, person in enumerate(persons):
+        person.setdefault("face_name", "Unknown")
+        person.setdefault("ocr_code", None)
+
+        if i < len(face_results) and face_results[i]:
+            person["face_name"] = face_results[i].get("name", "Unknown")
+
+        if i < len(ocr_results) and ocr_results[i]:
+            person["ocr_code"] = ocr_results[i].get("code")
+
+        if person.get("face_name") == "Unknown" and person.get("ocr_code"):
+            for registered in face_manager._registered:
+                if registered.get("code") == person["ocr_code"]:
+                    person["face_name"] = registered["name"]
+                    break
 
     # violation_indices: persons that have ppe_violations (no zone check for photo analysis)
     violation_indices = {
@@ -788,6 +867,8 @@ async def analyze_image(file: UploadFile = File(...)):
             "confidence": round(p.get("confidence", 0), 3),
             "violations": p.get("ppe_violations", []),
             "ppe_status": p.get("ppe_result", {}),
+            "face_name": p.get("face_name", "Unknown"),
+            "ocr_code": p.get("ocr_code"),
         }
         for p in persons
     ]
@@ -797,6 +878,7 @@ async def analyze_image(file: UploadFile = File(...)):
             "label": e.get("class_name", e.get("label", "")),
             "confidence": round(e.get("confidence", 0), 3),
             "bbox": e.get("bbox", []),
+            "category": e.get("category"),
         }
         for e in env_detections
     ]
@@ -819,6 +901,13 @@ async def analyze_image(file: UploadFile = File(...)):
         for s in safety_cones
     ]
 
+    hazard_violation_found = any(
+        (e.get("category") == "fire_smoke")
+        or (e.get("label") or e.get("class_name") or "").lower() in FIRE_SMOKE_LABELS
+        or (e.get("label") or e.get("class_name") or "").lower() in {"open-hole", "open_hole"}
+        for e in env_detections
+    )
+
     return {
         "annotated_image": f"data:image/jpeg;base64,{img_b64}",
         "image_size": {"width": frame.shape[1], "height": frame.shape[0]},
@@ -831,7 +920,7 @@ async def analyze_image(file: UploadFile = File(...)):
             "total_env": len(env_detections),
             "total_road": len(road_detections),
             "total_safety_cones": len(safety_cones),
-            "violations_found": bool(violation_indices),
+            "violations_found": bool(violation_indices) or hazard_violation_found,
         },
     }
 
@@ -904,7 +993,7 @@ def get_stats(db: Session = Depends(get_db)):
         "unresolved_alerts": unresolved,
         "total_shutdowns": total_shutdowns,
         "false_positives_today": fp_today,
-        "camera_status": "online" if stream_manager.cap and stream_manager.cap.isOpened() else "offline",
+        "camera_status": stream_manager.camera_status(),
     }
 # ─── Agentic AI & LLM Automation ─────────────────────────────
 class ReportRequest(BaseModel):

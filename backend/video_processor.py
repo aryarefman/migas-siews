@@ -29,6 +29,8 @@ class VideoProcessor:
 
     def __init__(self):
         self._pipeline: Optional[MultiStagePipeline] = None
+        self._max_retries = 3
+        self._retry_delay = 5.0  # seconds
 
     def _get_pipeline(self) -> MultiStagePipeline:
         if self._pipeline is None:
@@ -49,10 +51,24 @@ class VideoProcessor:
             job.status = "processing"
             db.commit()
 
-            cap = cv2.VideoCapture(job.file_path)
-            if not cap.isOpened():
+            cap = None
+            last_error = None
+            for attempt in range(self._max_retries):
+                if cap is not None:
+                    cap.release()
+                cap = cv2.VideoCapture(job.file_path)
+                if cap.isOpened():
+                    last_error = None
+                    break
+                last_error = f"Attempt {attempt + 1}/{self._max_retries}: Cannot open video file"
+                print(f"[VIDEO] {last_error}")
+                if attempt < self._max_retries - 1:
+                    import time as time_module
+                    time_module.sleep(self._retry_delay)
+
+            if cap is None or not cap.isOpened():
                 job.status = "failed"
-                job.error_message = "Cannot open video file"
+                job.error_message = last_error or "Cannot open video file"
                 db.commit()
                 return
 
@@ -176,6 +192,7 @@ class VideoProcessor:
                             "class_name": d.get("class_name", d.get("label", "")),
                             "confidence": round(d["confidence"], 3),
                             "bbox": d["bbox"],
+                            "category": d.get("category"),
                         }
                         for d in result["env"]
                     ],
@@ -214,7 +231,8 @@ class VideoProcessor:
                     db.commit()
 
             cap.release()
-            out.release()
+            if out is not None:
+                out.release()
 
             # Verify output file exists and has content
             if os.path.exists(output_path):

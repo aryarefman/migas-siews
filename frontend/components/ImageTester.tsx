@@ -4,10 +4,31 @@ import { useState } from "react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
 
+interface PersonDetection {
+  face_name?: string;
+  ocr_code?: string | null;
+  confidence?: number;
+}
+
+interface HazardDetection {
+  class_name?: string;
+  label?: string;
+  category?: string;
+  confidence?: number;
+}
+
+interface ImageAnalysisResult {
+  detections?: PersonDetection[];
+  hazards?: HazardDetection[];
+  image?: string;
+}
+
 export default function ImageTester() {
   const [analyzing, setAnalyzing] = useState(false);
-  const [result, setResult] = useState<any>(null);
+  const [result, setResult] = useState<ImageAnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const peopleDetections = Array.isArray(result?.detections) ? result.detections : [];
+  const hazardDetections = Array.isArray(result?.hazards) ? result.hazards : [];
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -26,7 +47,7 @@ export default function ImageTester() {
       });
 
       if (res.ok) {
-        setResult(await res.json());
+        setResult((await res.json()) as ImageAnalysisResult);
       } else {
         const err = await res.json();
         setError(err.detail || "Gagal menganalisa gambar. Coba lagi.");
@@ -132,17 +153,48 @@ export default function ImageTester() {
 
             {/* Detection List */}
             <div className="space-y-1.5">
-              {result.detections.map((d: any, i: number) => (
+              {peopleDetections.map((d, i) => (
                 <div key={i} className="px-3 py-2 rounded-lg bg-[#070d18] border-l-2 border-blue-500/60 flex justify-between items-center">
                   <div>
                     <p className="text-[10px] font-bold text-white uppercase">{d.face_name || "Unknown"}</p>
                     <p className="text-[9px] text-industrial-500 font-mono">ID: {d.ocr_code || "N/A"}</p>
                   </div>
                   <div className="text-right">
-                    <p className="text-[11px] font-bold text-emerald-400">{(d.confidence * 100).toFixed(0)}%</p>
+                    <p className="text-[11px] font-bold text-emerald-400">{((d.confidence || 0) * 100).toFixed(0)}%</p>
                   </div>
                 </div>
               ))}
+              {hazardDetections.map((d, i) => {
+                const rawLabel = d.class_name || d.label || "hazard";
+                const labelMap: Record<string, string> = {
+                  fire: "Api",
+                  smoke: "Asap",
+                  "open-hole": "Lubang Terbuka",
+                  open_hole: "Lubang Terbuka",
+                  barricade: "Barikade",
+                };
+                const displayLabel = labelMap[rawLabel] || rawLabel.replace(/[-_]/g, " ");
+                const isCritical = d.category === "fire_smoke" || rawLabel === "fire" || rawLabel === "smoke";
+
+                return (
+                  <div key={`hazard-${i}`} className={`px-3 py-2 rounded-lg bg-[#070d18] border-l-2 flex justify-between items-center ${isCritical ? "border-red-500/70" : "border-amber-500/70"}`}>
+                    <div>
+                      <p className="text-[10px] font-bold text-white uppercase">{displayLabel}</p>
+                      <p className="text-[9px] text-industrial-500 font-mono">HAZARD: {rawLabel}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className={`text-[11px] font-bold ${isCritical ? "text-red-400" : "text-amber-400"}`}>
+                        {((d.confidence || 0) * 100).toFixed(0)}%
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+              {peopleDetections.length === 0 && hazardDetections.length === 0 && (
+                <div className="px-3 py-2 rounded-lg bg-[#070d18] border border-[#1c2a42]">
+                  <p className="text-[10px] font-semibold text-industrial-500 uppercase tracking-widest text-center">No detections</p>
+                </div>
+              )}
             </div>
           </div>
         )}

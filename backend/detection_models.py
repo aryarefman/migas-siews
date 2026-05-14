@@ -36,6 +36,12 @@ class RoadClass(Enum):
     TAMBALAN = 2  # Patch
 
 
+class FireSmokeClass(Enum):
+    """Fire & Smoke Stage - fire_smoke.pt"""
+    FIRE = 0
+    SMOKE = 1
+
+
 # =============================================================================
 # Detection Result Dataclasses
 # =============================================================================
@@ -165,9 +171,15 @@ class DetectionResult:
 # Confidence thresholds
 PERSON_CONFIDENCE_THRESHOLD = 0.50  # Person detection
 PPE_CONFIDENCE_THRESHOLD = 0.35    # PPE violation threshold
-ENV_CONFIDENCE_THRESHOLD = 0.40    # Environment hazards
-ROAD_CONFIDENCE_THRESHOLD = 0.40   # Road damage
+ENV_CONFIDENCE_THRESHOLD = 0.55    # Environment hazards
+ROAD_CONFIDENCE_THRESHOLD = 0.65   # Road damage
 SAFETY_CONE_CONFIDENCE = 0.50      # Safety cone minimum (higher to reduce FP)
+FIRE_SMOKE_CONFIDENCE_THRESHOLD = 0.65  # YOLO-level filter for live stream
+FIRE_CONFIDENCE_THRESHOLD = 0.70        # Post-filter for fire
+SMOKE_CONFIDENCE_THRESHOLD = 0.70       # Post-filter for smoke (very prone to FP indoors)
+FIRE_SMOKE_LABELS = {"fire", "smoke"}
+ENV_HAZARD_LABELS = {"open-hole", "barricade"}
+OPEN_HOLE_CONFIDENCE_THRESHOLD = 0.88
 
 # PPE IoU assignment threshold
 PPE_IOU_THRESHOLD = 0.10
@@ -202,6 +214,14 @@ def get_road_class_name(cls_id: int) -> str:
     """Get road damage class name from class ID."""
     try:
         return RoadClass(cls_id).name.lower()
+    except ValueError:
+        return f"cls_{cls_id}"
+
+
+def get_fire_smoke_class_name(cls_id: int) -> str:
+    """Get fire/smoke class name from class ID."""
+    try:
+        return FireSmokeClass(cls_id).name.lower()
     except ValueError:
         return f"cls_{cls_id}"
 

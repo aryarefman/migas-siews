@@ -86,7 +86,7 @@ export default function ZonesPage() {
               <div className="p-5">
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-3 h-3 rounded-full flex-shrink-0 ring-2 ring-offset-2 ring-offset-[#0c1220]" style={{ backgroundColor: zone.color, ringColor: zone.color + '40' }} />
+                    <div className="w-3 h-3 rounded-full flex-shrink-0 ring-offset-2 ring-offset-[#0c1220]" style={{ backgroundColor: zone.color, boxShadow: `0 0 0 2px ${zone.color}40` }} />
                     <h3 className="text-sm font-bold text-white truncate">{zone.name}</h3>
                   </div>
                   <span className={zone.risk_level === "high" ? "badge-high" : "badge-low"}>{zone.risk_level}</span>

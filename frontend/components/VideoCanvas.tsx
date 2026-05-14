@@ -33,6 +33,10 @@ export default function VideoCanvas({
   const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
   const [cameraOnline, setCameraOnline] = useState(true);
 
+  // MJPEG reconnect state
+  const retryCountRef = useRef(0);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Handle canvas resize to match the image
   const updateCanvasSize = useCallback(() => {
     const canvas = canvasRef.current;
@@ -48,6 +52,41 @@ export default function VideoCanvas({
     window.addEventListener("resize", updateCanvasSize);
     return () => window.removeEventListener("resize", updateCanvasSize);
   }, [updateCanvasSize]);
+
+  // MJPEG stream reconnect with exponential backoff
+  const scheduleRetry = useCallback(() => {
+    if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+    // Backoff: 2s, 4s, 8s … capped at 30s
+    const delay = Math.min(30_000, 2_000 * Math.pow(2, retryCountRef.current));
+    retryCountRef.current += 1;
+    console.log(`[VideoCanvas] MJPEG retry in ${delay}ms (attempt ${retryCountRef.current})`);
+    retryTimerRef.current = setTimeout(() => {
+      if (imgRef.current) {
+        imgRef.current.src = `${API_URL}/stream?t=${Date.now()}`;
+      }
+    }, delay);
+  }, []);
+
+  const handleImgLoad = useCallback(() => {
+    setCameraOnline(true);
+    retryCountRef.current = 0;
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+    updateCanvasSize();
+  }, [updateCanvasSize]);
+
+  const handleImgError = useCallback(() => {
+    setCameraOnline(false);
+    scheduleRetry();
+  }, [scheduleRetry]);
+
+  useEffect(() => {
+    return () => {
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+    };
+  }, []);
 
   // Draw zones on canvas
   useEffect(() => {
@@ -170,16 +209,6 @@ export default function VideoCanvas({
     });
   };
 
-  const handleImgError = () => {
-    setCameraOnline(false);
-    setTimeout(() => {
-      if (imgRef.current) {
-        imgRef.current.src = `${API_URL}/stream?t=${Date.now()}`;
-        setCameraOnline(true);
-      }
-    }, 5000);
-  };
-
   return (
     <div
       ref={containerRef}
@@ -194,7 +223,7 @@ export default function VideoCanvas({
         src={`${API_URL}/stream`}
         alt="Live Camera Feed"
         className="w-full h-full block object-contain"
-        onLoad={updateCanvasSize}
+        onLoad={handleImgLoad}
         onError={handleImgError}
         style={{ background: "#020408" }}
       />
@@ -218,7 +247,7 @@ export default function VideoCanvas({
           </div>
           <p className="text-xs text-red-400 font-bold uppercase tracking-[0.2em]">Camera Feed Offline</p>
           <p className="text-industrial-500 text-[10px] font-semibold mt-1.5">
-            Attempting to reconnect...
+            Reconnecting... (attempt {retryCountRef.current})
           </p>
           <div className="mt-5 w-5 h-5 border-2 border-[#162033] border-t-red-400 rounded-full animate-spin" />
         </div>

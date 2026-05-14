@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback } from "react";
 import AlertCard from "./AlertCard";
+import { useWebSocket } from "@/hooks/useWebSocket";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8001";
@@ -31,9 +32,6 @@ interface AlertFeedProps {
 
 export default function AlertFeed({ onAlert, onShutdown }: AlertFeedProps) {
   const [alerts, setAlerts] = useState<AlertData[]>([]);
-  const [connected, setConnected] = useState(false);
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectRef = useRef<NodeJS.Timeout | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
 
   const playBeep = useCallback((isHigh: boolean) => {
@@ -51,37 +49,24 @@ export default function AlertFeed({ onAlert, onShutdown }: AlertFeedProps) {
     } catch { /* audio not available */ }
   }, []);
 
-  const connectWs = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
-    const ws = new WebSocket(`${WS_URL}/ws/alerts`);
-    ws.onopen = () => {
-      setConnected(true);
-      const pingInterval = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) ws.send("ping");
-        else clearInterval(pingInterval);
-      }, 30000);
-    };
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === "alert") {
-          const alert: AlertData = data;
-          setAlerts((prev) => [alert, ...prev].slice(0, 30));
-          playBeep(alert.risk_level === "high");
-          onAlert(alert);
-          if (alert.shutdown_triggered) onShutdown(alert);
-        }
-      } catch { /* pong or non-json */ }
-    };
-    ws.onclose = () => { setConnected(false); reconnectRef.current = setTimeout(connectWs, 3000); };
-    ws.onerror = () => { ws.close(); };
-    wsRef.current = ws;
+  const handleMessage = useCallback((data: unknown) => {
+    const msg = data as { type?: string; [key: string]: unknown };
+    if (msg.type === "alert") {
+      const alert = msg as unknown as AlertData;
+      setAlerts((prev) => [alert, ...prev].slice(0, 30));
+      playBeep(alert.risk_level === "high");
+      onAlert(alert);
+      if (alert.shutdown_triggered) onShutdown(alert);
+    }
+    // camera_status events are handled by dashboard/VideoCanvas
   }, [onAlert, onShutdown, playBeep]);
 
-  useEffect(() => {
-    connectWs();
-    return () => { if (reconnectRef.current) clearTimeout(reconnectRef.current); wsRef.current?.close(); };
-  }, [connectWs]);
+  const { status } = useWebSocket({
+    url: `${WS_URL}/ws/alerts`,
+    onMessage: handleMessage,
+  });
+
+  const connected = status === "connected";
 
   const resolveAlert = async (alertId: number) => {
     try {

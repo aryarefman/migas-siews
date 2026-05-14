@@ -8,6 +8,7 @@ import base64
 import threading
 import time
 import queue
+import re
 from pathlib import Path
 from typing import List, Dict
 import numpy as np
@@ -34,12 +35,16 @@ realtime_alerts = queue.Queue(maxsize=50)
 last_alert_time = {}  # Track last alert per violation type for cooldown
 ALERT_COOLDOWN = 30  # seconds between same alerts
 
+import os
+MODEL_BASE = os.environ.get("MODEL_BASE", str(Path(__file__).parent.parent))
+
 # Model paths
-MODELS_DIR = Path(__file__).parent.parent / "model" / "New"
-SERVICE_DIR = Path(__file__).parent
+MODELS_DIR = Path(MODEL_BASE) / "model" / "New"
+SERVICE_DIR = Path(MODEL_BASE)
 
 # PPE Detection threshold - standardized across all endpoints
 PPE_VIOLATION_THRESHOLD = 0.35
+FIRE_SMOKE_THRESHOLD = 0.40
 
 
 def calculate_iou(box1, box2):
@@ -126,6 +131,44 @@ def detect_ppe_on_image(img, persons):
 
     return persons
 
+
+def detect_env_hazards(img):
+    """Run environment plus fire/smoke detection and return one hazard list."""
+    env = []
+    for r in model_s3(img, verbose=False, conf=0.4):
+        if r.boxes is None:
+            continue
+        for box in r.boxes:
+            cls_id = int(box.cls[0])
+            cls_name = ENV_CLASSES.get(cls_id, f"cls_{cls_id}")
+            conf = float(box.conf[0])
+            x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
+            env.append({
+                "class_id": cls_id,
+                "class_name": cls_name,
+                "confidence": conf,
+                "bbox": [x1, y1, x2, y2],
+            })
+
+    for r in model_fire_smoke(img, verbose=False, conf=FIRE_SMOKE_THRESHOLD):
+        if r.boxes is None:
+            continue
+        for box in r.boxes:
+            cls_id = int(box.cls[0])
+            cls_name = FIRE_SMOKE_CLASSES.get(cls_id, f"cls_{cls_id}")
+            conf = float(box.conf[0])
+            x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
+            env.append({
+                "class_id": cls_id,
+                "class_name": cls_name,
+                "label": cls_name,
+                "confidence": conf,
+                "bbox": [x1, y1, x2, y2],
+                "category": "fire_smoke",
+            })
+
+    return env
+
 # Load all models
 print("[Inference] Loading models...")
 print(f"  - S1 person: yolo26n.pt")
@@ -136,12 +179,97 @@ print(f"  - S3 openhole: {MODELS_DIR / 'best_stage3_openhole.pt'}")
 model_s3 = YOLO(MODELS_DIR / "best_stage3_openhole.pt")
 print(f"  - S5 jalan berlubang: {MODELS_DIR / 'best_jalan_berlubang.pt'}")
 model_s5 = YOLO(MODELS_DIR / 'best_jalan_berlubang.pt')
+print(f"  - Fire/smoke: {MODELS_DIR / 'fire_smoke.pt'}")
+model_fire_smoke = YOLO(MODELS_DIR / "fire_smoke.pt")
 print("[Inference] All models loaded successfully")
 
 # Initialize EasyOCR reader
 print("[Inference] Loading EasyOCR...")
 reader = easyocr.Reader(['en', 'id'], gpu=False)
 print("[Inference] EasyOCR loaded successfully")
+
+
+OCR_ALLOWLIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"
+
+
+def preprocess_ocr_variants(img):
+    """Create contrast variants that work better for small CCTV text."""
+    h, w = img.shape[:2]
+    scale = min(3.0, max(1.0, 900 / max(w, 1), 500 / max(h, 1)))
+    if scale > 1.05:
+        img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8)).apply(gray)
+    blur = cv2.GaussianBlur(clahe, (0, 0), 1.0)
+    sharp = cv2.addWeighted(clahe, 1.7, blur, -0.7, 0)
+    binary = cv2.adaptiveThreshold(
+        sharp, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY, 31, 7
+    )
+    return [sharp, binary, cv2.bitwise_not(binary)]
+
+
+def clean_ocr_text(text):
+    cleaned = text.upper().strip().replace(" ", "").replace("_", "-")
+    cleaned = re.sub(r"[^A-Z0-9-]", "", cleaned)
+    return re.sub(r"-{2,}", "-", cleaned).strip("-")
+
+
+def ocr_code_variants(text):
+    cleaned = clean_ocr_text(text)
+    if len(cleaned) < 2:
+        return []
+
+    digit_fix = str.maketrans({"O": "0", "Q": "0", "D": "0", "I": "1", "L": "1", "Z": "2", "S": "5", "B": "8"})
+    variants = [cleaned, cleaned.translate(digit_fix)]
+    if "-" in cleaned:
+        variants.append(cleaned.replace("-", ""))
+
+    out = []
+    for value in variants:
+        if value and value not in out:
+            out.append(value)
+    return out
+
+
+def looks_like_uniform_code(text):
+    patterns = [
+        r"^[A-Z]{1,3}\d{1,5}$",
+        r"^[A-Z]{2,4}-\d{2,5}$",
+        r"^[A-Z]{1,4}\d{1,4}[A-Z]?$",
+        r"^\d{2,5}[A-Z]{1,3}$",
+        r"^\d{3,8}$",
+    ]
+    return any(re.match(pattern, text) for pattern in patterns)
+
+
+def run_optimized_ocr(img):
+    best = {}
+    for variant in preprocess_ocr_variants(img):
+        results = reader.readtext(
+            variant,
+            detail=1,
+            paragraph=False,
+            min_size=8,
+            text_threshold=0.42,
+            low_text=0.25,
+            link_threshold=0.25,
+            decoder="beamsearch",
+            beamWidth=5,
+            allowlist=OCR_ALLOWLIST,
+        )
+        for _, text, confidence in results:
+            if confidence < 0.25:
+                continue
+            for code in ocr_code_variants(text):
+                if not looks_like_uniform_code(code):
+                    continue
+                score = float(confidence) + (0.15 if any(c.isalpha() for c in code) and any(c.isdigit() for c in code) else 0)
+                if code not in best or score > best[code]["score"]:
+                    best[code] = {"text": code, "confidence": round(float(confidence), 3), "score": round(score, 3)}
+
+    return sorted(best.values(), key=lambda item: item["score"], reverse=True)
 
 # ACTUAL model classes (verified from best_stage2_labeled_safety.pt):
 # Class 0: unknown (no PPE / background)
@@ -156,6 +284,7 @@ PPE_CLASSES = {
 }
 ENV_CLASSES = {0: "barricade", 1: "hard-hat", 2: "safety-cone", 3: "open-hole", 4: "vest"}
 ROAD_CLASSES = {0: "lubang", 1: "retak", 2: "tambalan"}  # Model only has 3 classes
+FIRE_SMOKE_CLASSES = {0: "fire", 1: "smoke"}
 
 
 class DetectionRequest(BaseModel):
@@ -206,22 +335,7 @@ async def detect(req: DetectionRequest):
 
         # S3: Environment detection
         if "s3" in req.stages:
-            env = []
-            for r in model_s3(img, verbose=False, conf=0.4):
-                if r.boxes is None:
-                    continue
-                for box in r.boxes:
-                    cls_id = int(box.cls[0])
-                    cls_name = ENV_CLASSES.get(cls_id, f"cls_{cls_id}")
-                    conf = float(box.conf[0])
-                    x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
-                    env.append({
-                        "class_id": cls_id,
-                        "class_name": cls_name,
-                        "confidence": conf,
-                        "bbox": [x1, y1, x2, y2],
-                    })
-            results["env"] = env
+            results["env"] = detect_env_hazards(img)
         
         # S5: Road damage detection
         if "s5" in req.stages:
@@ -315,17 +429,14 @@ def get_webcam_frame():
                 label += f" - {', '.join(person['violations'])}"
             cv2.putText(frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
         
-        # S3: Environment detection
-        for r in model_s3(frame, verbose=False, conf=0.4):
-            if r.boxes is None:
-                continue
-            for box in r.boxes:
-                cls_id = int(box.cls[0])
-                cls_name = ENV_CLASSES.get(cls_id, f"cls_{cls_id}")
-                conf = float(box.conf[0])
-                x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
-                cv2.putText(frame, f"{cls_name} {conf:.2f}", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+        # S3 + fire/smoke: Environment detection
+        for det in detect_env_hazards(frame):
+            x1, y1, x2, y2 = det["bbox"]
+            cls_name = det.get("class_name", "")
+            conf = det.get("confidence", 0)
+            color = (0, 0, 255) if det.get("category") == "fire_smoke" else (255, 0, 0)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(frame, f"{cls_name} {conf:.2f}", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
         
         return frame
 
@@ -423,22 +534,7 @@ async def analyze_image(req: DetectionRequest):
 
         # S3: Environment detection
         if "s3" in req.stages:
-            env = []
-            for r in model_s3(img, verbose=False, conf=0.4):
-                if r.boxes is None:
-                    continue
-                for box in r.boxes:
-                    cls_id = int(box.cls[0])
-                    cls_name = ENV_CLASSES.get(cls_id, f"cls_{cls_id}")
-                    conf = float(box.conf[0])
-                    x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
-                    env.append({
-                        "class_id": cls_id,
-                        "class_name": cls_name,
-                        "confidence": conf,
-                        "bbox": [x1, y1, x2, y2],
-                    })
-            results["env"] = env
+            results["env"] = detect_env_hazards(img)
         
         # S5: Road damage detection
         if "s5" in req.stages:
@@ -559,18 +655,10 @@ async def ocr_text(req: DetectionRequest):
         if img is None:
             raise HTTPException(status_code=400, detail="Invalid image data")
         
-        # Run EasyOCR
-        results = reader.readtext(img)
-        
-        # Combine all detected text
-        text_lines = []
-        for (bbox, text, confidence) in results:
-            if confidence > 0.5:  # Filter low confidence results
-                text_lines.append(text)
-        
-        extracted_text = " ".join(text_lines)
-        
-        return {"text": extracted_text}
+        results = run_optimized_ocr(img)
+        extracted_text = " ".join(item["text"] for item in results)
+
+        return {"text": extracted_text, "results": results}
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"OCR error: {str(e)}")
@@ -625,6 +713,18 @@ def realtime_detection_loop():
             ret, frame = webcam.read()
             if not ret:
                 continue
+
+        fire_smoke_hazards = [
+            h for h in detect_env_hazards(frame)
+            if h.get("category") == "fire_smoke"
+        ]
+        if fire_smoke_hazards:
+            labels = sorted({h.get("class_name", "fire_smoke") for h in fire_smoke_hazards})
+            alert_key = "fire_smoke_" + "_".join(labels)
+            current_time = time.time()
+            if alert_key not in last_alert_time or (current_time - last_alert_time[alert_key]) > ALERT_COOLDOWN:
+                last_alert_time[alert_key] = current_time
+                send_hazard_alert_to_backend(fire_smoke_hazards, frame)
         
         # Run S1 person detection
         persons = []
@@ -697,6 +797,43 @@ def send_alert_to_backend(persons, violations, frame):
             
     except Exception as e:
         print(f"[REALTIME] Failed to send alert: {e}")
+
+
+def send_hazard_alert_to_backend(hazards, frame):
+    """Send direct fire/smoke hazard alert to Go backend via HTTP POST."""
+    try:
+        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        snapshot_b64 = base64.b64encode(buffer.tobytes()).decode('utf-8')
+        labels = sorted({h.get("class_name", "fire_smoke") for h in hazards})
+
+        alert_data = {
+            "type": "alert",
+            "alert_id": int(time.time() * 1000),
+            "zone_id": 998,
+            "zone_name": "Fire/Smoke Detected",
+            "risk_level": "high",
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "confidence": max(h.get("confidence", 0) for h in hazards),
+            "snapshot_url": f"data:image/jpeg;base64,{snapshot_b64}",
+            "shutdown_triggered": True,
+            "persons_count": 0,
+            "violation_type": "fire_smoke",
+            "ppe_detail": {"hazards": labels},
+        }
+
+        response = requests.post(
+            f"{GO_BACKEND_URL}/api/alerts",
+            json=alert_data,
+            timeout=5
+        )
+
+        if response.status_code == 200:
+            print(f"[REALTIME] Fire/smoke alert sent: {labels}")
+        else:
+            print(f"[REALTIME] Fire/smoke alert failed: {response.status_code}")
+
+    except Exception as e:
+        print(f"[REALTIME] Failed to send fire/smoke alert: {e}")
 
 
 @app.get("/realtime/status")
@@ -997,20 +1134,15 @@ async def analyze_video(request: Request):
                 person["ppe_violations"] = person.get("violations", [])
 
             # S3: Environment detection
-            env = []
-            for r in model_s3(frame, verbose=False, conf=0.4):
-                if r.boxes is None:
-                    continue
-                for box in r.boxes:
-                    cls_id = int(box.cls[0])
-                    cls_name = ENV_CLASSES.get(cls_id, f"cls_{cls_id}")
-                    conf = float(box.conf[0])
-                    x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
-                    env.append({
-                        "class_name": cls_name,
-                        "confidence": round(conf, 3),
-                        "bbox": [x1, y1, x2, y2],
-                    })
+            env = [
+                {
+                    "class_name": d.get("class_name", d.get("label", "")),
+                    "confidence": round(d.get("confidence", 0), 3),
+                    "bbox": d.get("bbox", []),
+                    "category": d.get("category"),
+                }
+                for d in detect_env_hazards(frame)
+            ]
             
             # S5: Road damage detection
             road = []
@@ -1138,15 +1270,15 @@ async def video_progress(request: Request):
             for person in persons:
                 person["ppe_violations"] = person.get("violations", [])
 
-            env = []
-            for r in model_s3(frame, verbose=False, conf=0.4):
-                if r.boxes is None:
-                    continue
-                for box in r.boxes:
-                    cls_id = int(box.cls[0])
-                    cls_name = ENV_CLASSES.get(cls_id, f"cls_{cls_id}")
-                    x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
-                    env.append({"class_name": cls_name, "bbox": [x1, y1, x2, y2]})
+            env = [
+                {
+                    "class_name": d.get("class_name", d.get("label", "")),
+                    "confidence": round(d.get("confidence", 0), 3),
+                    "bbox": d.get("bbox", []),
+                    "category": d.get("category"),
+                }
+                for d in detect_env_hazards(frame)
+            ]
             
             timestamp_sec = frame_idx / fps
             has_violation = any(p.get("ppe_violations") for p in persons) or len(env) > 0

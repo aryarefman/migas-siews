@@ -61,9 +61,6 @@ export default function DashboardPage() {
   const [facilityName, setFacilityName] = useState("Offshore Platform A");
   const [audioEnabled, setAudioEnabled] = useState(true);
 
-  // Audio elements
-  const [audioContext] = useState<AudioContext | null>(typeof window !== "undefined" ? new (window.AudioContext || (window as any).webkitAudioContext)() : null);
-
   const playAlertSound = useCallback((type: "entry" | "warning" | "critical" | "shutdown" | "face" | "ocr") => {
     if (!audioEnabled) return;
     

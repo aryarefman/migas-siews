@@ -8,13 +8,40 @@ from typing import List, Tuple
 from ultralytics import YOLO
 
 from detection_models import (
+    ENV_CONFIDENCE_THRESHOLD,
+    ENV_HAZARD_LABELS,
+    FIRE_CONFIDENCE_THRESHOLD,
+    FIRE_SMOKE_CONFIDENCE_THRESHOLD,
+    FIRE_SMOKE_LABELS,
+    OPEN_HOLE_CONFIDENCE_THRESHOLD,
     PPE_CONFIDENCE_THRESHOLD,
+    ROAD_CONFIDENCE_THRESHOLD,
     SAFETY_CONE_CONFIDENCE,
+    SMOKE_CONFIDENCE_THRESHOLD,
     PPE_IOU_THRESHOLD,
     VIOLATION_NO_HELMET,
     VIOLATION_NO_VEST,
     VIOLATION_NO_BELT,
 )
+
+
+def _select_device() -> str:
+    """Auto-detect best available compute device: CUDA > MPS > CPU."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            name = torch.cuda.get_device_name(0)
+            print(f"[DETECTOR] GPU detected: {name} — using CUDA")
+            return "cuda"
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            print("[DETECTOR] Apple MPS detected — using MPS")
+            return "mps"
+    except Exception:
+        pass
+    print("[DETECTOR] No GPU found — using CPU")
+    return "cpu"
+
+DEVICE = _select_device()
 
 
 def calculate_iou(box1: List[float], box2: List[float]) -> float:
@@ -38,14 +65,75 @@ def calculate_iou(box1: List[float], box2: List[float]) -> float:
     return intersection / union if union > 0 else 0.0
 
 
+def bbox_area_ratio(box: List[float], frame: np.ndarray) -> float:
+    """Return bbox area as a fraction of the full frame area."""
+    x1, y1, x2, y2 = box
+    frame_h, frame_w = frame.shape[:2]
+    area = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    return area / max(float(frame_w * frame_h), 1.0)
+
+
+def bbox_center_y_ratio(box: List[float], frame: np.ndarray) -> float:
+    """Return bbox vertical center as a 0..1 ratio of frame height."""
+    _, y1, _, y2 = box
+    frame_h = frame.shape[0]
+    return ((y1 + y2) / 2) / max(float(frame_h), 1.0)
+
+
+def bbox_bottom_y_ratio(box: List[float], frame: np.ndarray) -> float:
+    """Return bbox bottom as a 0..1 ratio of frame height."""
+    return box[3] / max(float(frame.shape[0]), 1.0)
+
+
+def is_valid_env_hazard(label: str, conf: float, bbox: List[float], frame: np.ndarray) -> bool:
+    """Class-specific filters so normal objects do not become safety hazards."""
+    normalized = label.lower()
+    if normalized not in ENV_HAZARD_LABELS:
+        return False
+
+    if normalized == "open-hole":
+        # Open holes are floor/ground hazards. Detections on ceilings/windows
+        # are almost always false positives in dashboard camera feeds.
+        if conf < OPEN_HOLE_CONFIDENCE_THRESHOLD:
+            return False
+        if bbox_center_y_ratio(bbox, frame) < 0.55 or bbox_bottom_y_ratio(bbox, frame) < 0.68:
+            return False
+        if bbox_area_ratio(bbox, frame) < 0.004:
+            return False
+
+    return True
+
+
+def is_valid_fire_smoke_hazard(label: str, conf: float, bbox: List[float], frame: np.ndarray) -> bool:
+    """Class-specific fire/smoke filters with adaptive threshold support."""
+    normalized = label.lower()
+    if normalized not in FIRE_SMOKE_LABELS:
+        return False
+
+    # Import here to avoid circular import; stream module owns adaptive state
+    try:
+        from stream import get_effective_threshold
+    except ImportError:
+        get_effective_threshold = lambda base, _: base
+
+    area_ratio = bbox_area_ratio(bbox, frame)
+    if normalized == "smoke":
+        threshold = get_effective_threshold(SMOKE_CONFIDENCE_THRESHOLD, "smoke")
+        return conf >= threshold and area_ratio >= 0.05  # smoke must cover ≥5% of frame
+
+    threshold = get_effective_threshold(FIRE_CONFIDENCE_THRESHOLD, "fire")
+    return conf >= threshold and area_ratio >= 0.03  # fire must cover ≥3% of frame
+
+
 class UnifiedDetector:
     """
-    Four-stage YOLO detector: Person -> PPE -> Environment -> Road Damage.
+    Five-stage YOLO detector: Person -> PPE -> Environment -> Road Damage -> Fire/Smoke.
 
     Stage 1: Person detection (yolov8n.pt / yolo26n.pt)
     Stage 2: PPE verification (best_stage2_labeled_safety.pt - 4 classes)
     Stage 3: Environment hazards (best_stage3_openhole.pt)
     Stage 4: Road damage (best_jalan_berlubang.pt)
+    Stage 5: Fire & smoke hazards (fire_smoke.pt)
     """
 
     # PPE Classes (Stage 2)
@@ -56,42 +144,65 @@ class UnifiedDetector:
     PPE_CLASSES = {0: "unknown", 1: "belt", 2: "helmet", 3: "vest"}
 
     def __init__(self, confidence: float = 0.25):
+        # Root project dir is one level above backend/
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        model_new = os.path.join(project_root, "model", "New")
 
-        print("[DETECTOR] Initializing UnifiedDetector (4-Stage Pipeline)...")
+        print("[DETECTOR] Initializing UnifiedDetector (5-Stage Pipeline)...")
+        print(f"[DETECTOR] model_new={model_new}")
 
-        # Stage 1: Person detection
-        person_model_path = os.path.join(project_root, "yolo26n.pt")
+        # Stage 1: Person detection — yolo26n.pt lives in backend/
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        person_model_path = os.path.join(backend_dir, "yolo26n.pt")
         if not os.path.exists(person_model_path):
-            person_model_path = os.path.join(project_root, "yolov8n.pt")
+            person_model_path = os.path.join(backend_dir, "yolov8n.pt")
         self.person_model = YOLO(person_model_path)
-        print("[DETECTOR]   Stage 1 (Person) ✓")
+        print(f"[DETECTOR]   Stage 1 (Person) ✓ — {os.path.basename(person_model_path)}")
 
         # Stage 2: PPE detection
-        ppe_path = os.path.join(project_root, "model", "New", "best_stage2_labeled_safety.pt")
+        ppe_path = os.path.join(model_new, "best_stage2_labeled_safety.pt")
         self.ppe_model = YOLO(ppe_path)
         print(f"[DETECTOR]   Stage 2 (PPE)    ✓ - Classes: {self.ppe_model.names}")
 
         # Stage 3: Environment hazards
-        env_path = os.path.join(project_root, "model", "New", "best_stage3_openhole.pt")
+        env_path = os.path.join(model_new, "best_stage3_openhole.pt")
         self.env_model = YOLO(env_path)
         print("[DETECTOR]   Stage 3 (Env)    ✓")
 
         # Stage 4: Road damage
-        road_path = os.path.join(project_root, "model", "New", "best_jalan_berlubang.pt")
+        road_path = os.path.join(model_new, "best_jalan_berlubang.pt")
         self.road_model = YOLO(road_path)
         print("[DETECTOR]   Stage 4 (Road)   ✓")
+
+        # Stage 5: Fire & smoke detection
+        fire_smoke_path = os.path.join(model_new, "fire_smoke.pt")
+        if not os.path.exists(fire_smoke_path):
+            print("[DETECTOR]   Stage 5 (Fire/Smoke) — model not found, skipping")
+            self.fire_smoke_model = None
+        else:
+            self.fire_smoke_model = YOLO(fire_smoke_path)
+            print(f"[DETECTOR]   Stage 5 (Fire/Smoke) ✓ - Classes: {self.fire_smoke_model.names}")
 
         print("[DETECTOR] All models loaded successfully!")
         self.confidence = confidence
 
-    def detect_base(self, frame: np.ndarray) -> Tuple[List[dict], List[dict], List[dict], List[dict]]:
+    def detect_base(self, frame: np.ndarray, photo_mode: bool = False) -> Tuple[List[dict], List[dict], List[dict], List[dict]]:
         """
         Run base inference - People, Environment, Road, Safety Cones.
         Returns: (people, env_hazards, road_damage, safety_cones)
+
+        photo_mode=True: Uses lower thresholds and relaxed area filters for
+        static image analysis (uploaded photos). Live stream uses stricter
+        thresholds to reduce false positives from camera noise/motion.
         """
+        # ── Threshold selection ──────────────────────────────────────────────
+        # Photo mode uses lower thresholds — static images have less noise
+        env_conf = 0.35 if photo_mode else ENV_CONFIDENCE_THRESHOLD
+        road_conf = 0.40 if photo_mode else ROAD_CONFIDENCE_THRESHOLD
+        road_area_min = 0.001 if photo_mode else 0.003  # Relaxed area filter for photos
+
         # Stage 3: Environment hazards (includes safety cones)
-        env_results = self.env_model(frame, verbose=False, conf=self.confidence)
+        env_results = self.env_model(frame, verbose=False, conf=env_conf, device=DEVICE)
         env_hazards = []
         safety_cones = []
 
@@ -103,24 +214,36 @@ class UnifiedDetector:
                 cls_id = int(box.cls[0])
                 label = self.env_model.names[cls_id]
                 conf = float(box.conf[0])
+                bbox = [x1, y1, x2, y2]
+
+                if conf < env_conf:
+                    continue
 
                 if label == "safety-cone" and conf >= SAFETY_CONE_CONFIDENCE:
                     safety_cones.append({
-                        "bbox": [x1, y1, x2, y2],
+                        "bbox": bbox,
                         "label": label,
                         "class_name": label,
                         "confidence": conf
                     })
-                else:
+                elif photo_mode and label.lower() in ENV_HAZARD_LABELS:
+                    # Photo mode: skip strict position/area filters
                     env_hazards.append({
-                        "bbox": [x1, y1, x2, y2],
+                        "bbox": bbox,
+                        "label": label,
+                        "class_name": label,
+                        "confidence": conf
+                    })
+                elif is_valid_env_hazard(label, conf, bbox, frame):
+                    env_hazards.append({
+                        "bbox": bbox,
                         "label": label,
                         "class_name": label,
                         "confidence": conf
                     })
 
         # Stage 4: Road damage
-        road_results = self.road_model(frame, verbose=False, conf=self.confidence)
+        road_results = self.road_model(frame, verbose=False, conf=road_conf, device=DEVICE)
         road_damage = []
         for r in road_results:
             if not r.boxes:
@@ -129,15 +252,54 @@ class UnifiedDetector:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 cls_id = int(box.cls[0])
                 label = self.road_model.names[cls_id]
+                conf = float(box.conf[0])
+                bbox = [x1, y1, x2, y2]
+
+                # Small road detections on non-road CCTV are usually false positives.
+                # Photo mode uses relaxed area filter since the image is intentional.
+                if conf < road_conf or bbox_area_ratio(bbox, frame) < road_area_min:
+                    continue
+
                 road_damage.append({
-                    "bbox": [x1, y1, x2, y2],
+                    "bbox": bbox,
                     "label": label,
                     "class_name": label,
-                    "confidence": float(box.conf[0])
+                    "confidence": conf
+                })
+
+        # Stage 5: Fire & smoke hazards (optional model)
+        # Photo mode uses lower threshold — no live-stream noise to worry about
+        fs_conf = 0.25 if photo_mode else FIRE_SMOKE_CONFIDENCE_THRESHOLD
+        fire_smoke_results = self.fire_smoke_model(
+            frame, verbose=False, conf=fs_conf, device=DEVICE
+        ) if self.fire_smoke_model is not None else []
+        for r in fire_smoke_results:
+            if not r.boxes:
+                continue
+            for box in r.boxes:
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                cls_id = int(box.cls[0])
+                label = self.fire_smoke_model.names[cls_id]
+                conf = float(box.conf[0])
+                bbox = [x1, y1, x2, y2]
+
+                # In photo mode skip area filter — static images can have small fire/smoke
+                if photo_mode:
+                    if label.lower() not in FIRE_SMOKE_LABELS:
+                        continue
+                elif not is_valid_fire_smoke_hazard(label, conf, bbox, frame):
+                    continue
+
+                env_hazards.append({
+                    "bbox": bbox,
+                    "label": label,
+                    "class_name": label,
+                    "confidence": conf,
+                    "category": "fire_smoke",
                 })
 
         # Stage 1: People
-        person_results = self.person_model(frame, verbose=False, conf=self.confidence)
+        person_results = self.person_model(frame, verbose=False, conf=self.confidence, device=DEVICE)
         people = []
         for r in person_results:
             if not r.boxes:
@@ -169,7 +331,7 @@ class UnifiedDetector:
 
         # Run PPE detection with very low threshold to catch all potential PPE
         ppe_detections = []
-        ppe_results = self.ppe_model(frame, verbose=False, conf=0.01, imgsz=640)
+        ppe_results = self.ppe_model(frame, verbose=False, conf=0.01, imgsz=640, device=DEVICE)
 
         for r in ppe_results:
             if r.boxes is None:
@@ -248,6 +410,18 @@ class MultiStagePipeline(UnifiedDetector):
         if people:
             people = self.detect_ppe_full_frame(frame, people)
 
+        return {
+            "persons": people,
+            "env": env_hazards,
+            "road": road_damage,
+            "safety_cones": safety_cones
+        }
+
+    def run_photo(self, frame: np.ndarray) -> dict:
+        """Photo/image analysis — uses lower thresholds, no area/temporal filters."""
+        people, env_hazards, road_damage, safety_cones = self.detect_base(frame, photo_mode=True)
+        if people:
+            people = self.detect_ppe_full_frame(frame, people)
         return {
             "persons": people,
             "env": env_hazards,

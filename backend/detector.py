@@ -185,14 +185,24 @@ class UnifiedDetector:
             self.fire_smoke_model = YOLO(fire_smoke_path)
             print(f"[DETECTOR]   Stage 5 (Fire/Smoke) ✓ - Classes: {self.fire_smoke_model.names}")
 
-        # Vehicle detection
-        vehicle_path = os.path.join(model_new, "vehicle_best.pt")
-        if not os.path.exists(vehicle_path):
-            print("[DETECTOR]   Vehicle model — model not found, skipping")
-            self.vehicle_model = None
-        else:
-            self.vehicle_model = YOLO(vehicle_path)
+        # Vehicle detection — prefer COCO model (reliable for all vehicle types)
+        # Fallback chain: yolov8s_coco.pt > vehicle_best.pt
+        pretrain_dir = os.path.join(project_root, "model", "Pretrain")
+        coco_vehicle_path = os.path.join(pretrain_dir, "yolov8s_coco.pt")
+        custom_vehicle_path = os.path.join(model_new, "vehicle_best.pt")
+
+        if os.path.exists(coco_vehicle_path):
+            self.vehicle_model = YOLO(coco_vehicle_path)
+            self._vehicle_mode = "coco"  # Filter to vehicle classes only
+            print(f"[DETECTOR]   Vehicle (COCO)  ✓ — yolov8s_coco.pt (car/bus/truck/motorcycle)")
+        elif os.path.exists(custom_vehicle_path):
+            self.vehicle_model = YOLO(custom_vehicle_path)
+            self._vehicle_mode = "custom"
             print(f"[DETECTOR]   Vehicle         ✓ - Classes: {self.vehicle_model.names}")
+        else:
+            self.vehicle_model = None
+            self._vehicle_mode = None
+            print("[DETECTOR]   Vehicle model — not found, skipping")
 
         print("[DETECTOR] All models loaded successfully!")
         self.confidence = confidence
@@ -279,8 +289,9 @@ class UnifiedDetector:
                 })
 
         # Stage 5: Fire & smoke hazards (optional model)
-        # Photo mode: use moderate threshold — too low causes clouds/haze false positives
-        fs_conf = 0.50 if photo_mode else FIRE_SMOKE_CONFIDENCE_THRESHOLD
+        # Photo mode: use HIGH threshold — current model has many false positives
+        # on clouds, sunset, haze. Only accept very confident detections.
+        fs_conf = 0.75 if photo_mode else FIRE_SMOKE_CONFIDENCE_THRESHOLD
         fire_smoke_results = self.fire_smoke_model(
             frame, verbose=False, conf=fs_conf, device=DEVICE
         ) if self.fire_smoke_model is not None else []
@@ -297,15 +308,17 @@ class UnifiedDetector:
                 if photo_mode:
                     if label.lower() not in FIRE_SMOKE_LABELS:
                         continue
-                    # Photo mode: reject detections that are likely clouds/sky
-                    # Clouds typically: top of frame, very large area, low confidence
+                    # Photo mode: aggressive filtering for false positives
                     area_ratio = bbox_area_ratio(bbox, frame)
                     center_y = bbox_center_y_ratio(bbox, frame)
-                    # If detection covers >40% of frame → probably sky/clouds
-                    if area_ratio > 0.40:
+                    # If detection covers >30% of frame → probably sky/clouds/haze
+                    if area_ratio > 0.30:
                         continue
-                    # If smoke is in top 25% of frame and covers >20% → likely clouds
-                    if label.lower() == "smoke" and center_y < 0.25 and area_ratio > 0.20:
+                    # If smoke is in top 40% of frame → likely clouds/sky
+                    if label.lower() == "smoke" and center_y < 0.40:
+                        continue
+                    # Reject low-confidence smoke entirely in photos
+                    if label.lower() == "smoke" and conf < 0.80:
                         continue
                 elif not is_valid_fire_smoke_hazard(label, conf, bbox, frame):
                     continue
@@ -345,27 +358,50 @@ class UnifiedDetector:
 
         vehicle_conf = 0.25 if photo_mode else VEHICLE_CONFIDENCE_THRESHOLD
         vehicles = []
-        vehicle_results = self.vehicle_model(frame, verbose=False, conf=vehicle_conf, device=DEVICE)
 
-        for r in vehicle_results:
-            if not r.boxes:
-                continue
-            for box in r.boxes:
-                x1, y1, x2, y2 = box.xyxy[0].tolist()
-                cls_id = int(box.cls[0])
-                label = self.vehicle_model.names[cls_id]
-                conf = float(box.conf[0])
-
-                if conf < vehicle_conf:
+        # COCO model: filter to vehicle classes only
+        if self._vehicle_mode == "coco":
+            coco_vehicle_classes = [2, 3, 5, 7]  # car, motorcycle, bus, truck
+            coco_labels = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
+            vehicle_results = self.vehicle_model(
+                frame, verbose=False, conf=vehicle_conf, device=DEVICE,
+                classes=coco_vehicle_classes
+            )
+            for r in vehicle_results:
+                if not r.boxes:
                     continue
-
-                vehicles.append({
-                    "bbox": [x1, y1, x2, y2],
-                    "label": label,
-                    "class_name": label,
-                    "class_id": cls_id,
-                    "confidence": conf,
-                })
+                for box in r.boxes:
+                    x1, y1, x2, y2 = box.xyxy[0].tolist()
+                    cls_id = int(box.cls[0])
+                    label = coco_labels.get(cls_id, self.vehicle_model.names[cls_id])
+                    conf = float(box.conf[0])
+                    vehicles.append({
+                        "bbox": [x1, y1, x2, y2],
+                        "label": label,
+                        "class_name": label,
+                        "class_id": cls_id,
+                        "confidence": conf,
+                    })
+        else:
+            # Custom vehicle model
+            vehicle_results = self.vehicle_model(frame, verbose=False, conf=vehicle_conf, device=DEVICE)
+            for r in vehicle_results:
+                if not r.boxes:
+                    continue
+                for box in r.boxes:
+                    x1, y1, x2, y2 = box.xyxy[0].tolist()
+                    cls_id = int(box.cls[0])
+                    label = self.vehicle_model.names[cls_id]
+                    conf = float(box.conf[0])
+                    if conf < vehicle_conf:
+                        continue
+                    vehicles.append({
+                        "bbox": [x1, y1, x2, y2],
+                        "label": label,
+                        "class_name": label,
+                        "class_id": cls_id,
+                        "confidence": conf,
+                    })
 
         return vehicles
 

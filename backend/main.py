@@ -496,12 +496,23 @@ def list_alerts(
     for a in alerts:
         # Get zone info safely
         zname = "Unknown Zone"
-        risk = "unknown"
+        risk = "high"  # Default to high for safety
         if a.zone_id:
             zone = db.query(Zone).filter(Zone.id == a.zone_id).first()
             if zone:
                 zname = zone.name
                 risk = zone.risk_level
+            else:
+                # PPE violations use hashed zone_id — show violation type instead
+                vtype = a.violation_type or ""
+                if "ppe" in vtype:
+                    zname = "PPE Violation"
+                    risk = "high"
+                elif "fire" in vtype or "smoke" in vtype:
+                    zname = "Fire/Smoke Detected"
+                    risk = "high"
+                elif "zone" in vtype:
+                    zname = "Zone Violation"
 
         result.append({
             "alert_id": a.id,

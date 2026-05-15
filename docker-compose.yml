@@ -1,4 +1,13 @@
-version: '3.8'
+# ============================================================
+# SIEWS+ 5.0 — Cross-Platform Docker Compose (CPU fallback)
+# Works on Windows/Mac/Linux without GPU
+#
+# For GPU-accelerated Linux:
+#   docker compose -f docker-compose.linux.yml up --build
+#
+# For CPU (any OS):
+#   docker compose up --build
+# ============================================================
 
 services:
   backend:
@@ -9,23 +18,15 @@ services:
       - "8001:8001"
     volumes:
       - ./model:/app/model:ro
+      - ./backend:/app/backend
       - ./backend/static:/app/backend/static
       - siews-data:/app/data
-    devices:
-      - /dev/video0:/dev/video0
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
     environment:
       - MODEL_BASE=/app
       - DATABASE_URL=sqlite:////app/data/siews.db
       - INFERENCE_URL=http://inference:8001
       - CAMERA_SOURCE=0
-      - NVIDIA_VISIBLE_DEVICES=all
+      - PYTHONUNBUFFERED=1
     depends_on:
       inference:
         condition: service_healthy
@@ -34,7 +35,7 @@ services:
       interval: 60s
       timeout: 30s
       retries: 5
-      start_period: 90s
+      start_period: 120s
     restart: unless-stopped
 
   inference:
@@ -48,6 +49,7 @@ services:
     environment:
       - MODEL_BASE=/app
       - GO_BACKEND_URL=http://backend:8001
+      - PYTHONUNBUFFERED=1
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 30s
@@ -63,6 +65,7 @@ services:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8001
+      - NEXT_PUBLIC_WS_URL=ws://localhost:8001
       - BACKEND_INTERNAL_URL=http://backend:8001
     depends_on:
       - backend

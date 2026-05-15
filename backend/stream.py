@@ -35,11 +35,11 @@ from models import Zone, Alert, Setting
 from config import SNAPSHOT_DIR
 
 # ─── Adaptive FPS Configuration ──────────────────────────────
-# System adapts to device capability automatically
-MAX_FPS = 25          # Match MJPEG output — no point rendering faster
-MIN_FPS = 15          # Lower bound — minimum acceptable
-FPS_WINDOW = 15       # Shorter window = faster adaptation
-TARGET_UTILIZATION = 0.85  # Use 85% of frame budget
+# Push FPS as high as device can handle — no artificial cap
+MAX_FPS = 120         # No cap — let GPU push maximum
+MIN_FPS = 20          # Minimum acceptable
+FPS_WINDOW = 10       # Fast adaptation
+TARGET_UTILIZATION = 0.90  # Use 90% of frame budget — maximize throughput
 
 # ─── Temporal Consistency ─────────────────────────────────────
 # Fire/smoke must appear in N consecutive inference frames before alerting.
@@ -380,14 +380,13 @@ class StreamManager:
         return self.frame
 
     def generate_frames(self):
-        """MJPEG stream generator — capped at 25 FPS for browser compatibility."""
+        """MJPEG stream generator — adaptive, no artificial cap."""
         print("[STREAM] MJPEG Stream client connected")
         while True:
             frame = self.get_frame()
             yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-            # Fixed 25 FPS for MJPEG delivery — browser can't handle more
-            # Internal render loop runs faster but MJPEG output is capped here
-            time.sleep(0.04)  # 25 FPS = 40ms per frame
+            # Minimal sleep — just yield CPU, let adaptive controller pace the render loop
+            time.sleep(0.001)
 
     # =========================================================================
     # Zone Management

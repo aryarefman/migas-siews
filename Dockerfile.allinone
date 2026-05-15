@@ -1,0 +1,99 @@
+# ============================================================
+# SIEWS+ 5.0 — All-in-One Dockerfile
+# Single container: Backend + Inference + Frontend
+# Base: nvidia/cuda 12.1 debian (slim, GPU-ready)
+# ============================================================
+
+FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04
+
+WORKDIR /app
+
+# ── System deps ──────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Python
+    python3.11 python3.11-venv python3.11-dev python3-pip \
+    # OpenCV + media
+    libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 ffmpeg \
+    # Build tools (for dlib)
+    cmake g++ make libopenblas-dev liblapack-dev \
+    # Node.js 20
+    curl \
+    # Supervisor for multi-process
+    supervisor \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Python deps (backend + inference) ────────────────────────
+COPY backend/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir dlib==19.24.6 face_recognition==1.3.0 \
+    && pip install --no-cache-dir -r /tmp/requirements.txt \
+    && rm /tmp/requirements.txt
+
+# Remove build tools to save space
+RUN apt-get purge -y cmake g++ make && apt-get autoremove -y || true
+
+# ── Frontend build ───────────────────────────────────────────
+COPY frontend/package*.json /app/frontend/
+RUN cd /app/frontend && npm ci --omit=dev 2>/dev/null || npm ci
+
+COPY frontend/ /app/frontend/
+RUN cd /app/frontend \
+    && NEXT_PUBLIC_API_URL=http://localhost:8001 \
+       NEXT_PUBLIC_WS_URL=ws://localhost:8001 \
+       npm run build
+
+# ── Copy backend + inference source ──────────────────────────
+COPY backend/ /app/backend/
+COPY inference-service/ /app/inference-service/
+COPY model/ /app/model/
+
+# ── Supervisor config (runs all 3 services) ──────────────────
+RUN mkdir -p /var/log/supervisor
+COPY <<'EOF' /etc/supervisor/conf.d/siews.conf
+[supervisord]
+nodaemon=true
+logfile=/var/log/supervisor/supervisord.log
+
+[program:inference]
+command=python3 -m uvicorn main:app --host 0.0.0.0 --port 8002 --app-dir /app/inference-service
+directory=/app/inference-service
+autostart=true
+autorestart=true
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+environment=MODEL_BASE="/app",PYTHONPATH="/app/inference-service:/app",PYTHONUNBUFFERED="1"
+
+[program:backend]
+command=python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8001
+directory=/app
+autostart=true
+autorestart=true
+startsecs=10
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+environment=MODEL_BASE="/app",PYTHONPATH="/app/backend:/app",DATABASE_URL="sqlite:////app/data/siews.db",PYTHONUNBUFFERED="1"
+
+[program:frontend]
+command=npm start
+directory=/app/frontend
+autostart=true
+autorestart=true
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+environment=NODE_ENV="production",PORT="3000"
+EOF
+
+# ── Expose ports ─────────────────────────────────────────────
+EXPOSE 3000 8001 8002
+
+# ── Entrypoint ───────────────────────────────────────────────
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/siews.conf"]

@@ -42,3 +42,25 @@ backup/
 *~
 backend-go/server
 backend-go/siews-backend
+
+# Additional DB/logs
+*.db
+*.sqlite
+backend/static/faces/face_db.json
+backend/brain/
+
+# Pretrain models (too large for git)
+model/Pretrain/
+model/Old/
+
+# Temp scripts
+download_*.py
+test_pretrain.py
+merge_log.txt
+vehicle_detection_train.ipynb
+
+# IDE
+.vscode/
+.kiro/
+.agents/
+.codex/

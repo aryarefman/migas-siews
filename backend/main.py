@@ -1388,6 +1388,28 @@ def train_faces():
     return result
 
 
+# ─── OCR Test Endpoint ────────────────────────────────────────
+@app.post("/ocr/test")
+async def test_ocr(file: UploadFile = File(...)):
+    """Test OCR on full image — reads all text/codes found."""
+    from ocr_engine import ocr_engine
+    
+    contents = await file.read()
+    arr = np.frombuffer(contents, dtype=np.uint8)
+    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if frame is None:
+        raise HTTPException(status_code=400, detail="Cannot read image")
+    
+    # Run OCR on full image (not just person crops)
+    results = ocr_engine.read_full_image(frame)
+    
+    return {
+        "codes_found": len(results),
+        "results": results,
+        "image_size": {"width": frame.shape[1], "height": frame.shape[0]},
+    }
+
+
 # ─── Stats Endpoint ───────────────────────────────────────────
 @app.get("/stats")
 def get_stats(db: Session = Depends(get_db)):

@@ -2,16 +2,16 @@
 
 import { useState } from "react";
 
-interface DetectionResult {
-  face_name?: string;
-  ocr_code?: string;
-  confidence: number;
-  bbox?: number[];
-}
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
 
 interface AnalyzeResult {
   image: string;
-  detections: DetectionResult[];
+  summary?: Record<string, number>;
+  detections?: any[];
+  hazards?: any[];
+  vehicles?: any[];
+  road?: any[];
+  ocr?: any[];
 }
 
 export default function ImageTester() {
@@ -22,125 +22,147 @@ export default function ImageTester() {
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (!file.type.startsWith("image/")) { setError("File harus gambar"); return; }
+    if (file.size > 10 * 1024 * 1024) { setError("Max 10MB"); return; }
 
     setAnalyzing(true);
     setResult(null);
     setError(null);
 
-    // Validate file type
-    if (!file.type.startsWith('image/')) {
-      setError("File harus gambar (JPG/PNG/WebP)");
-      setAnalyzing(false);
-      return;
-    }
-
-    // Validate file size (max 10MB)
-    if (file.size > 10 * 1024 * 1024) {
-      setError("Ukuran file maksimal 10MB");
-      setAnalyzing(false);
-      return;
-    }
-
     const formData = new FormData();
     formData.append("file", file);
 
     try {
-      const res = await fetch(`/api/analyze`, {
-        method: "POST",
-        body: formData,
-        cache: "no-store",  // Prevent caching
+      // Run detection + OCR in parallel
+      const [detectRes, ocrRes] = await Promise.all([
+        fetch(`${API_URL}/ai/analyze-image`, { method: "POST", body: formData }),
+        fetch(`${API_URL}/ocr/test`, { method: "POST", body: (() => { const f = new FormData(); f.append("file", file); return f; })() }),
+      ]);
+
+      const detectData = detectRes.ok ? await detectRes.json() : {};
+      const ocrData = ocrRes.ok ? await ocrRes.json() : { results: [] };
+
+      setResult({
+        image: detectData.image || "",
+        summary: detectData.summary,
+        detections: detectData.detections || [],
+        hazards: detectData.hazards || [],
+        vehicles: detectData.vehicles || [],
+        road: detectData.road || [],
+        ocr: ocrData.results || [],
       });
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.detail || `Server error: ${res.status}`);
-      }
-
-      const data = await res.json();
-
-      // Validate response structure
-      if (!data.detections || !Array.isArray(data.detections)) {
-        throw new Error("Format response tidak valid dari server");
-      }
-
-      // Log detection results for debugging
-      console.log("[AI Photo Lab] Detection results:", data.detections);
-
-      setResult(data);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Terjadi kesalahan tidak dikenal";
-      setError(msg);
-      console.error("[AI Photo Lab] Error:", msg);
+      setError(err instanceof Error ? err.message : "Error");
     } finally {
       setAnalyzing(false);
     }
   };
 
   return (
-    <div className="p-4 border-t border-[var(--border)]">
-      {/* Section Header */}
-      <h3 className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-[0.15em] mb-3 flex items-center gap-2">
-        <svg className="w-4 h-4 text-[var(--accent-light)]" fill="currentColor" viewBox="0 0 24 24">
-          <path d="M5 21q-.825 0-1.413-.587T3 19V5q0-.825.587-1.413T5 3h14q.825 0 1.413.587T21 5v14q0 .825-.587 1.413T19 21H5zm0-2h14V5H5v14zm2-2h10l-3.5-4.5-2.5 3-1.5-2L7 17zm-2 2V5v14z"/>
-        </svg>
-        Upload & Test
-      </h3>
+    <div className="space-y-4">
+      {/* Upload */}
+      {!analyzing ? (
+        <label className="block w-full text-center py-5 rounded-lg border-2 border-dashed border-[var(--border)] hover:border-[var(--accent)]/30 cursor-pointer">
+          <input type="file" className="hidden" accept="image/*" onChange={handleUpload} />
+          <span className="text-xs font-medium text-[var(--text-muted)]">+ UPLOAD & ANALYZE</span>
+        </label>
+      ) : (
+        <div className="py-5 text-center rounded-lg border border-[var(--border)]">
+          <div className="w-5 h-5 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+          <p className="text-xs text-[var(--accent-light)]">Processing...</p>
+        </div>
+      )}
 
-      <div className="space-y-3">
-        {!analyzing ? (
-          <label className="block w-full text-center py-4 rounded-lg border-2 border-dashed border-[#1c2a42] hover:border-amber-500/30 hover:bg-amber-500/5 transition-all cursor-pointer group">
-            <input type="file" className="hidden" accept="image/*" onChange={handleUpload} />
-            <svg className="w-5 h-5 text-industrial-600 group-hover:text-amber-400 mx-auto mb-2 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
-            <p className="text-[10px] font-semibold text-industrial-500 uppercase tracking-widest group-hover:text-amber-400 transition-colors">Upload & Analyze</p>
-          </label>
-        ) : (
-          <div className="py-5 text-center rounded-lg border border-[#1c2a42] bg-[#070d18]">
-            <div className="w-5 h-5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
-            <p className="text-[10px] font-semibold text-amber-400 animate-pulse uppercase tracking-widest">Processing...</p>
-          </div>
-        )}
+      {error && <p className="text-xs text-red-400 p-3 bg-red-500/10 rounded-lg">{error}</p>}
 
-        {error && (
-          <div className="p-3 bg-red-500/8 border border-red-500/20 rounded-lg animate-fade-in">
-            <p className="text-[10px] font-semibold text-red-400 flex items-center gap-2">
-              <svg className="w-3.5 h-3.5 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
-              {error}
-            </p>
-          </div>
-        )}
-
-        {result && (
-          <div className="animate-fade-in space-y-3">
-            {/* Result Image */}
-            <div className="relative aspect-video rounded-lg overflow-hidden border border-[#1c2a42]">
-              <img src={result.image} alt="Annotated Result" className="w-full h-full object-contain bg-black" />
-              <button
-                onClick={() => setResult(null)}
-                className="absolute top-2 right-2 p-1.5 rounded-md bg-black/70 text-industrial-400 hover:text-red-400 transition-colors"
-              >
-                <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-              </button>
+      {result && (
+        <div className="space-y-4 animate-fade-in">
+          {/* Annotated Image */}
+          {result.image && (
+            <div className="relative rounded-lg overflow-hidden border border-[var(--border)]">
+              <img src={result.image} alt="Result" className="w-full object-contain bg-black" />
+              <button onClick={() => setResult(null)} className="absolute top-2 right-2 w-6 h-6 rounded-full bg-black/70 text-white text-xs flex items-center justify-center">×</button>
             </div>
+          )}
 
-            {/* Detection List */}
-            <div className="space-y-1.5">
-              {result.detections.map((d: DetectionResult, i: number) => (
-                <div key={i} className="px-3 py-2 rounded-lg bg-[#070d18] border-l-2 border-blue-500/60 flex justify-between items-center">
-                  <div>
-                    <p className="text-[10px] font-bold text-white uppercase">{d.face_name || "Unknown"}</p>
-                    <p className="text-[9px] text-industrial-500 font-mono">ID: {d.ocr_code || "N/A"}</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-[11px] font-bold text-emerald-400">{(d.confidence * 100).toFixed(0)}%</p>
-                  </div>
+          {/* Summary */}
+          {result.summary && (
+            <div className="grid grid-cols-3 gap-2 text-center">
+              {Object.entries(result.summary).map(([k, v]) => (
+                <div key={k} className="p-2 rounded-lg bg-[var(--bg-input)] border border-[var(--border)]">
+                  <p className="text-lg font-bold text-[var(--text-main)]">{v}</p>
+                  <p className="text-[9px] text-[var(--text-faint)] uppercase">{k.replace(/_/g, " ")}</p>
                 </div>
               ))}
             </div>
-          </div>
-        )}
-      </div>
+          )}
+
+          {/* Persons */}
+          {result.detections && result.detections.length > 0 && (
+            <div>
+              <h4 className="text-[10px] font-bold text-[var(--text-muted)] uppercase mb-2">Persons ({result.detections.length})</h4>
+              {result.detections.map((d: any, i: number) => (
+                <div key={i} className="px-3 py-2 mb-1 rounded bg-[var(--bg-input)] border-l-2 border-emerald-500/60 flex justify-between">
+                  <span className="text-xs text-[var(--text-main)]">{d.face_name || "Unknown"} {d.ocr_code ? `[${d.ocr_code}]` : ""}</span>
+                  <span className="text-xs text-emerald-400">{(d.confidence * 100).toFixed(0)}%</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Hazards */}
+          {result.hazards && result.hazards.length > 0 && (
+            <div>
+              <h4 className="text-[10px] font-bold text-[var(--text-muted)] uppercase mb-2">Hazards ({result.hazards.length})</h4>
+              {result.hazards.map((h: any, i: number) => (
+                <div key={i} className="px-3 py-2 mb-1 rounded bg-[var(--bg-input)] border-l-2 border-red-500/60 flex justify-between">
+                  <span className="text-xs text-[var(--text-main)]">{h.label || h.class_name}</span>
+                  <span className="text-xs text-red-400">{(h.confidence * 100).toFixed(0)}%</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Vehicles */}
+          {result.vehicles && result.vehicles.length > 0 && (
+            <div>
+              <h4 className="text-[10px] font-bold text-[var(--text-muted)] uppercase mb-2">Vehicles ({result.vehicles.length})</h4>
+              {result.vehicles.map((v: any, i: number) => (
+                <div key={i} className="px-3 py-2 mb-1 rounded bg-[var(--bg-input)] border-l-2 border-purple-500/60 flex justify-between">
+                  <span className="text-xs text-[var(--text-main)]">{v.class_name || v.label}</span>
+                  <span className="text-xs text-purple-400">{(v.confidence * 100).toFixed(0)}%</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Road */}
+          {result.road && result.road.length > 0 && (
+            <div>
+              <h4 className="text-[10px] font-bold text-[var(--text-muted)] uppercase mb-2">Road Damage ({result.road.length})</h4>
+              {result.road.map((r: any, i: number) => (
+                <div key={i} className="px-3 py-2 mb-1 rounded bg-[var(--bg-input)] border-l-2 border-amber-500/60 flex justify-between">
+                  <span className="text-xs text-[var(--text-main)]">{r.class_name || r.label}</span>
+                  <span className="text-xs text-amber-400">{(r.confidence * 100).toFixed(0)}%</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* OCR */}
+          {result.ocr && result.ocr.length > 0 && (
+            <div>
+              <h4 className="text-[10px] font-bold text-[var(--text-muted)] uppercase mb-2">OCR Text ({result.ocr.length})</h4>
+              {result.ocr.map((o: any, i: number) => (
+                <div key={i} className="px-3 py-2 mb-1 rounded bg-[var(--bg-input)] border-l-2 border-cyan-500/60 flex justify-between">
+                  <span className="text-xs text-[var(--text-main)] font-mono">{o.text}</span>
+                  <span className="text-xs text-cyan-400">{(o.confidence * 100).toFixed(0)}%</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

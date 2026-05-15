@@ -142,6 +142,31 @@ class OCREngine:
         self._init_reader()
         return self._initialized
 
+    def read_full_image(self, frame: np.ndarray) -> list:
+        """Read ALL text from full image — for testing/demo purposes."""
+        if not self._ensure_ready():
+            return []
+        
+        try:
+            import easyocr
+            results = self._reader.readtext(frame, detail=1, paragraph=False)
+            output = []
+            for bbox_pts, text, confidence in results:
+                if confidence < 0.3 or len(text.strip()) < 2:
+                    continue
+                # Convert bbox points to [x1,y1,x2,y2]
+                xs = [p[0] for p in bbox_pts]
+                ys = [p[1] for p in bbox_pts]
+                output.append({
+                    "text": text.strip(),
+                    "confidence": round(float(confidence), 3),
+                    "bbox": [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))],
+                })
+            return output
+        except Exception as e:
+            print(f"[OCR] Full image read error: {e}")
+            return []
+
     def _extract_torso_crop(self, frame: np.ndarray, bbox: Sequence[float]):
         h_frame, w_frame = frame.shape[:2]
         x1, y1, x2, y2 = [int(v) for v in bbox]

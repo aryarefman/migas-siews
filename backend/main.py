@@ -104,7 +104,10 @@ async def camera_status():
 async def camera_enable():
     """Enable camera feed."""
     from stream import stream_manager
-    stream_manager.request_camera_reconnect("enable_api")
+    if not stream_manager.running:
+        asyncio.create_task(stream_manager.start())
+    else:
+        stream_manager.request_camera_reconnect("enable_api")
     return {"status": "on", "message": "Camera enabled"}
 
 
@@ -113,6 +116,7 @@ async def camera_disable():
     """Disable camera feed."""
     from stream import stream_manager
     stream_manager.running = False
+    stream_manager.camera_state = "offline"
     return {"status": "off", "message": "Camera disabled"}
 
 
@@ -260,7 +264,6 @@ async def analyze_uploaded_image(file: UploadFile = File(...), db: Session = Dep
         img_str = base64.b64encode(buffer).decode()
 
         # 5. Convert numpy types to native Python (fixes JSON serialization)
-        import json
         def sanitize(obj):
             if isinstance(obj, np.integer): return int(obj)
             if isinstance(obj, np.floating): return float(obj)
@@ -374,7 +377,7 @@ def create_zone(zone: ZoneCreate, db: Session = Depends(get_db)):
     db.add(new_zone)
     db.commit()
     db.refresh(new_zone)
-    return {
+    result = {
         "id": new_zone.id,
         "name": new_zone.name,
         "vertices": zone.vertices,
@@ -383,6 +386,9 @@ def create_zone(zone: ZoneCreate, db: Session = Depends(get_db)):
         "risk_level": new_zone.risk_level,
         "created_at": new_zone.created_at.isoformat() if new_zone.created_at else None,
     }
+    from stream import stream_manager
+    stream_manager.refresh_zones()
+    return result
 
 
 @app.put("/polygons/{zone_id}")
@@ -405,7 +411,7 @@ def update_zone(zone_id: int, update: ZoneUpdate, db: Session = Depends(get_db))
 
     db.commit()
     db.refresh(zone)
-    return {
+    result = {
         "id": zone.id,
         "name": zone.name,
         "vertices": json.loads(zone.vertices_json),
@@ -413,6 +419,9 @@ def update_zone(zone_id: int, update: ZoneUpdate, db: Session = Depends(get_db))
         "active": zone.active,
         "risk_level": zone.risk_level,
     }
+    from stream import stream_manager
+    stream_manager.refresh_zones()
+    return result
 
 
 @app.delete("/polygons/{zone_id}")
@@ -432,6 +441,8 @@ def delete_zone(zone_id: int, db: Session = Depends(get_db)):
     # 2. Delete the zone
     db.delete(zone)
     db.commit()
+    from stream import stream_manager
+    stream_manager.refresh_zones()
     return {"status": "deleted", "id": zone_id}
 
 
@@ -472,8 +483,11 @@ def list_alerts(
             "timestamp": a.timestamp.isoformat() if hasattr(a.timestamp, "isoformat") else str(a.timestamp),
             "shutdown_triggered": a.shutdown_triggered,
             "resolved": a.resolved,
+            "false_positive": a.false_positive or False,
             "person_name": a.person_name or "Unknown",
             "uniform_code": a.uniform_code,
+            "violation_type": a.violation_type or "",
+            "ppe_detail": json.loads(a.ppe_detail) if a.ppe_detail else None,
         })
     return {"total": total, "items": result}
 
@@ -487,6 +501,14 @@ def resolve_alert(alert_id: int, db: Session = Depends(get_db)):
     alert.resolved = True
     db.commit()
     return {"status": "resolved", "id": alert_id}
+
+
+@app.post("/alerts/resolve-all")
+def resolve_all_alerts(db: Session = Depends(get_db)):
+    """Bulk resolve all unresolved alerts."""
+    count = db.query(Alert).filter(Alert.resolved == False).update({"resolved": True})
+    db.commit()
+    return {"status": "resolved", "count": count}
 
 
 @app.post("/alerts/{alert_id}/false-positive")
@@ -1210,9 +1232,14 @@ async def analyze_image(file: UploadFile = File(...)):
 
 # ─── Face Management ──────────────────────────────────────────
 @app.get("/faces")
-def list_faces():
-    """List all registered faces."""
-    return face_manager.get_all_faces()
+def list_faces(include_samples: bool = Query(False, description="Include all sample URLs (internal use)")):
+    """
+    List all registered faces.
+
+    - Default: returns primary image URL only (frontend compatible).
+    - ?include_samples=true: returns all sample URLs per person (admin/internal use).
+    """
+    return face_manager.get_all_faces(include_all_samples=include_samples)
 
 
 @app.post("/faces/register")
@@ -1237,6 +1264,22 @@ def delete_face(face_id: str):
     if not success:
         raise HTTPException(status_code=404, detail="Face ID not found")
     return {"status": "deleted", "id": face_id}
+
+
+@app.put("/faces/{face_id}")
+def update_face(face_id: str, name: str = Query(None), code: str = Query(None), phone: str = Query(None)):
+    """Update personnel info (name, code, phone)."""
+    for entry in face_manager._registered:
+        if entry["id"] == face_id:
+            if name is not None:
+                entry["name"] = name
+            if code is not None:
+                entry["code"] = code
+            if phone is not None:
+                entry["phone"] = phone
+            face_manager._save_db()
+            return {"status": "updated", "id": face_id, "name": entry["name"], "code": entry["code"], "phone": entry.get("phone", "")}
+    raise HTTPException(status_code=404, detail="Face ID not found")
 
 
 @app.post("/faces/{face_id}/sample")

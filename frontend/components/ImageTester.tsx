@@ -2,8 +2,6 @@
 
 import { useState } from "react";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
-
 interface DetectionResult {
   face_name?: string;
   ocr_code?: string;
@@ -78,40 +76,14 @@ export default function ImageTester() {
     }
   };
 
-  const startSimulation = async () => {
-    if (!result?.image) return;
-    try {
-      const base64Response = await fetch(result.image);
-      const blob = await base64Response.blob();
-      const formData = new FormData();
-      formData.append("file", blob, "simulation.jpg");
-      await fetch(`${API_URL}/stream/simulate`, { method: "POST", body: formData });
-      alert("SYST: Simulation Mode Active — Live monitoring switched to photo feed.");
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const stopSimulation = async () => {
-    try {
-      await fetch(`${API_URL}/stream/reset`, { method: "POST" });
-      alert("SYST: Resuming live camera monitor.");
-      window.location.reload();
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
   return (
-    <div className="p-4 border-t border-[#162033]">
+    <div className="p-4 border-t border-[var(--border)]">
       {/* Section Header */}
-      <h3 className="text-[10px] font-bold text-industrial-400 uppercase tracking-[0.15em] mb-3 flex items-center gap-2">
-        <div className="w-5 h-5 rounded bg-blue-500/10 border border-blue-500/20 flex items-center justify-center">
-          <svg className="w-3 h-3 text-blue-400" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M5 21q-.825 0-1.413-.587T3 19V5q0-.825.587-1.413T5 3h14q.825 0 1.413.587T21 5v14q0 .825-.587 1.413T19 21H5zm0-2h14V5H5v14zm2-2h10l-3.5-4.5-2.5 3-1.5-2L7 17zm-2 2V5v14z"/>
-          </svg>
-        </div>
-        AI Photo Lab
+      <h3 className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-[0.15em] mb-3 flex items-center gap-2">
+        <svg className="w-4 h-4 text-[var(--accent-light)]" fill="currentColor" viewBox="0 0 24 24">
+          <path d="M5 21q-.825 0-1.413-.587T3 19V5q0-.825.587-1.413T5 3h14q.825 0 1.413.587T21 5v14q0 .825-.587 1.413T19 21H5zm0-2h14V5H5v14zm2-2h10l-3.5-4.5-2.5 3-1.5-2L7 17zm-2 2V5v14z"/>
+        </svg>
+        Upload & Test
       </h3>
 
       <div className="space-y-3">
@@ -141,23 +113,6 @@ export default function ImageTester() {
 
         {result && (
           <div className="animate-fade-in space-y-3">
-            {/* Action Buttons */}
-            <div className="flex gap-2">
-              <button
-                onClick={startSimulation}
-                className="flex-1 py-2 rounded-lg bg-emerald-500/15 border border-emerald-500/25 text-emerald-400 text-[10px] font-bold uppercase tracking-widest hover:bg-emerald-500/25 transition-all flex items-center justify-center gap-2"
-              >
-                <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-                Inject
-              </button>
-              <button
-                onClick={stopSimulation}
-                className="px-4 py-2 rounded-lg bg-[#0f1729] border border-[#1c2a42] text-industrial-400 text-[10px] font-bold uppercase tracking-widest hover:text-white hover:border-[#243b5c] transition-all"
-              >
-                Stop
-              </button>
-            </div>
-
             {/* Result Image */}
             <div className="relative aspect-video rounded-lg overflow-hidden border border-[#1c2a42]">
               <img src={result.image} alt="Annotated Result" className="w-full h-full object-contain bg-black" />

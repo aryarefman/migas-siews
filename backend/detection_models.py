@@ -202,7 +202,7 @@ class DetectionResult:
 PERSON_CONFIDENCE_THRESHOLD = 0.50  # Person detection
 PPE_CONFIDENCE_THRESHOLD = 0.35    # PPE violation threshold
 ENV_CONFIDENCE_THRESHOLD = 0.55    # Environment hazards
-ROAD_CONFIDENCE_THRESHOLD = 0.65   # Road damage
+ROAD_CONFIDENCE_THRESHOLD = 0.80   # Road damage (high to reduce indoor FP)
 SAFETY_CONE_CONFIDENCE = 0.50      # Safety cone minimum (higher to reduce FP)
 FIRE_SMOKE_CONFIDENCE_THRESHOLD = 0.65  # YOLO-level filter for live stream
 FIRE_CONFIDENCE_THRESHOLD = 0.70        # Post-filter for fire

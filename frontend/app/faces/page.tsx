@@ -1,211 +1,431 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import LoadingScreen from "@/components/LoadingScreen";
+import DetailPanel from "@/components/DetailPanel";
+import { showToast } from "@/components/Toast";
+import Modal from "@/components/Modal";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
 
-interface FaceEntry {
-  id: string;
-  name: string;
-  code: string;
-  image_url: string;
-  registered_at: string;
-}
+interface FaceEntry { id: string; name: string; code: string; phone?: string; image_url: string; registered_at: string; }
+
+const STEPS = [
+  { id: "info", label: "Info", instruction: "Fill in personnel details" },
+  { id: "front", label: "Front", instruction: "Capture face from the front" },
+  { id: "right", label: "Right", instruction: "Capture face from the right side" },
+  { id: "left", label: "Left", instruction: "Capture face from the left side" },
+  { id: "review", label: "Review", instruction: "Review and submit" },
+];
 
 export default function FacesPage() {
   const [loading, setLoading] = useState(true);
   const [faces, setFaces] = useState<FaceEntry[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [step, setStep] = useState(0);
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
   const [phone, setPhone] = useState("");
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [photos, setPhotos] = useState<{ front: File[]; right: File[]; left: File[] }>({ front: [], right: [], left: [] });
+  const [previews, setPreviews] = useState<{ front: string[]; right: string[]; left: string[] }>({ front: [], right: [], left: [] });
+  const [webcamActive, setWebcamActive] = useState(false);
+  const [deleteModal, setDeleteModal] = useState<{ isOpen: boolean; id: string | null }>({ isOpen: false, id: null });
+  const [selectedFace, setSelectedFace] = useState<FaceEntry | null>(null);
+  const [editMode, setEditMode] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editCode, setEditCode] = useState("");
+  const [editPhone, setEditPhone] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
-  const fetchFaces = async () => {
+  const fetchFaces = useCallback(async () => {
+    try { const r = await fetch(`${API_URL}/faces`); if (r.ok) setFaces(await r.json()); } catch {}
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { fetchFaces(); }, [fetchFaces]);
+
+  const currentPhotoKey = STEPS[step]?.id as "front" | "right" | "left";
+
+  // Webcam
+  const openWebcam = async () => {
     try {
-      const res = await fetch(`${API_URL}/faces`);
-      if (res.ok) setFaces(await res.json());
-    } catch (err) {
-      console.error("Failed to fetch faces", err);
-    } finally {
-      setLoading(false);
-    }
+      const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: 640, height: 480 } });
+      streamRef.current = s;
+      setWebcamActive(true);
+      setTimeout(() => { if (videoRef.current) { videoRef.current.srcObject = s; videoRef.current.play(); } }, 100);
+    } catch { showToast("Cannot access webcam", "error"); }
   };
 
-  useEffect(() => { fetchFaces(); }, []);
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      setSelectedFile(file);
-      setPreviewUrl(URL.createObjectURL(file));
-    }
+  const capturePhoto = () => {
+    if (!videoRef.current) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = videoRef.current.videoWidth;
+    canvas.height = videoRef.current.videoHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(videoRef.current, 0, 0);
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const file = new File([blob], `${currentPhotoKey}-${Date.now()}.jpg`, { type: "image/jpeg" });
+      addPhoto(file);
+    }, "image/jpeg", 0.9);
   };
 
-  const handleRegister = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedFile || !name || !phone) return;
+  const closeWebcam = () => {
+    if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null; }
+    setWebcamActive(false);
+  };
+
+  const addPhoto = (file: File) => {
+    setPhotos(prev => ({ ...prev, [currentPhotoKey]: [...prev[currentPhotoKey], file] }));
+    setPreviews(prev => ({ ...prev, [currentPhotoKey]: [...prev[currentPhotoKey], URL.createObjectURL(file)] }));
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files) return;
+    Array.from(e.target.files).forEach(addPhoto);
+    e.target.value = "";
+  };
+
+  const removePhoto = (key: "front" | "right" | "left", idx: number) => {
+    setPhotos(prev => ({ ...prev, [key]: prev[key].filter((_, i) => i !== idx) }));
+    setPreviews(prev => ({ ...prev, [key]: prev[key].filter((_, i) => i !== idx) }));
+  };
+
+  const nextStep = () => { closeWebcam(); setStep(s => Math.min(s + 1, STEPS.length - 1)); };
+  const prevStep = () => { closeWebcam(); setStep(s => Math.max(s - 1, 0)); };
+
+  const canProceed = () => {
+    if (step === 0) return name.trim() && phone.trim();
+    if (step === 1) return photos.front.length > 0;
+    if (step === 2) return true; // right is optional
+    if (step === 3) return true; // left is optional
+    return true;
+  };
+
+  const handleSubmit = async () => {
+    if (!photos.front.length) { showToast("At least one front photo required", "error"); return; }
     setUploading(true);
-    const formData = new FormData();
-    formData.append("file", selectedFile);
     try {
-      const res = await fetch(`${API_URL}/faces/register?name=${encodeURIComponent(name)}&code=${encodeURIComponent(code)}&phone=${encodeURIComponent(phone)}`, {
-        method: "POST", body: formData,
-      });
-      if (res.ok) {
-        setName(""); setCode(""); setPhone("");
-        setSelectedFile(null); setPreviewUrl(null);
-        fetchFaces();
-      } else {
-        const err = await res.json();
-        alert(`Gagal: ${err.detail}`);
+      // Register with first front photo
+      const formData = new FormData();
+      formData.append("file", photos.front[0]);
+      const r = await fetch(`${API_URL}/faces/register?name=${encodeURIComponent(name)}&code=${encodeURIComponent(code)}&phone=${encodeURIComponent(phone)}`, { method: "POST", body: formData });
+      if (!r.ok) { const e = await r.json(); showToast(`Failed: ${e.detail}`, "error"); setUploading(false); return; }
+      const data = await r.json();
+
+      // Upload additional samples
+      const allExtra = [...photos.front.slice(1), ...photos.right, ...photos.left];
+      for (const file of allExtra) {
+        const sf = new FormData();
+        sf.append("file", file);
+        await fetch(`${API_URL}/faces/${data.id}/sample`, { method: "POST", body: sf });
       }
-    } catch (err) { console.error("Upload error", err); }
+
+      showToast(`${name} registered with ${1 + allExtra.length} photos`, "success");
+      resetForm();
+      fetchFaces();
+    } catch { showToast("Registration failed", "error"); }
     finally { setUploading(false); }
   };
 
+  const resetForm = () => {
+    setStep(0); setName(""); setCode(""); setPhone("");
+    setPhotos({ front: [], right: [], left: [] });
+    setPreviews({ front: [], right: [], left: [] });
+    closeWebcam();
+  };
+
   const handleDelete = async (id: string) => {
-    if (!confirm("Hapus data wajah ini?")) return;
-    try {
-      const res = await fetch(`${API_URL}/faces/${id}`, { method: "DELETE" });
-      if (res.ok) fetchFaces();
-    } catch (err) { console.error("Delete error", err); }
+    try { await fetch(`${API_URL}/faces/${id}`, { method: "DELETE" }); showToast("Deleted", "success"); fetchFaces(); } catch {}
   };
 
   const handleTrain = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch(`${API_URL}/faces/train`, { method: "POST" });
-      if (res.ok) alert("Training data wajah berhasil disinkronkan!");
-    } catch (err) { console.error("Train error", err); }
-    finally { setLoading(false); }
+    try { const r = await fetch(`${API_URL}/faces/train`, { method: "POST" }); if (r.ok) showToast("Sync & Train complete", "success"); } catch { showToast("Training failed", "error"); }
   };
 
-  if (loading && faces.length === 0) return <LoadingScreen message="SYST_SYNC: FETCHING BIOMETRIC DATABASE" />;
+  if (loading && !faces.length) return <LoadingScreen message="Loading personnel..." />;
 
   return (
     <div className="min-h-screen p-5 max-w-[1400px] mx-auto animate-fade-in">
       {/* Header */}
-      <header className="mb-10 flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4 border-b border-[#162033] pb-8">
+      <header className="mb-8 flex justify-between items-center pb-6 border-b" style={{ borderColor: "var(--border)" }}>
         <div>
-          <div className="flex items-center gap-3 mb-2">
-            <div className="w-1.5 h-7 rounded-full bg-gradient-to-b from-amber-400 to-amber-600" />
-            <h1 className="text-2xl font-extrabold tracking-tight text-white">Biometric Registry</h1>
-          </div>
-          <p className="text-industrial-500 text-xs font-semibold tracking-[0.15em] uppercase">Personnel Digital Identity Management</p>
+          <h1 className="text-xl font-bold" style={{ color: "var(--text-main)" }}>Personnel Registry</h1>
+          <p className="text-sm mt-1" style={{ color: "var(--text-muted)" }}>Manage biometric data for face recognition</p>
         </div>
-        <button
-          onClick={handleTrain}
-          className="px-5 py-2.5 rounded-lg bg-[#0c1220] border border-amber-500/20 text-amber-400 text-[11px] font-bold uppercase tracking-wider hover:bg-amber-500/10 transition-all flex items-center gap-2 group"
-        >
-          <svg className="w-4 h-4 group-hover:rotate-180 transition-transform duration-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-          </svg>
+        <button onClick={handleTrain} className="btn-primary flex items-center gap-2 text-xs">
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
           Sync & Train
         </button>
       </header>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
-        {/* Registration Form */}
-        <section className="lg:col-span-4 rounded-xl bg-[#0c1220]/80 border border-[#162033] p-6 h-fit sticky top-24">
-          <h2 className="text-[11px] font-bold uppercase tracking-[0.2em] mb-6 text-industrial-400 flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-            New Registration
-          </h2>
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        {/* Registration Wizard */}
+        <section className="lg:col-span-5">
+          <div className="surface-card p-6">
+            {/* Step indicator */}
+            <div className="flex items-center gap-1 mb-6">
+              {STEPS.map((s, i) => (
+                <div key={s.id} className="flex items-center gap-1">
+                  <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold ${i <= step ? "text-white" : ""}`} style={{ background: i <= step ? "var(--accent)" : "var(--bg-input)", color: i <= step ? "white" : "var(--text-faint)" }}>{i + 1}</div>
+                  {i < STEPS.length - 1 && <div className="w-4 h-px" style={{ background: i < step ? "var(--accent)" : "var(--border)" }} />}
+                </div>
+              ))}
+            </div>
 
-          <form onSubmit={handleRegister} className="space-y-5">
-            <div className="group">
-              <label className="block text-[10px] font-semibold text-industrial-500 uppercase tracking-widest mb-2 group-focus-within:text-amber-400 transition-colors">Personnel Name</label>
-              <input
-                type="text" value={name} onChange={e => setName(e.target.value)}
-                placeholder="e.g. ARYA REFMAN"
-                className="input-field font-mono text-xs" required
-              />
-            </div>
-            <div className="group">
-              <label className="block text-[10px] font-semibold text-industrial-500 uppercase tracking-widest mb-2 group-focus-within:text-amber-400 transition-colors">Uniform / Employee ID</label>
-              <input type="text" value={code} onChange={e => setCode(e.target.value)} placeholder="e.g. P80" className="input-field font-mono text-xs" />
-            </div>
-            <div className="group">
-              <label className="block text-[10px] font-semibold text-industrial-500 uppercase tracking-widest mb-2 group-focus-within:text-amber-400 transition-colors">WhatsApp Number</label>
-              <input type="text" value={phone} onChange={e => setPhone(e.target.value)} placeholder="e.g. 62812345678" className="input-field font-mono text-xs" required />
-            </div>
-            <div>
-              <label className="block text-[10px] font-semibold text-industrial-500 uppercase tracking-widest mb-3">Facial Capture</label>
-              <div className="relative group cursor-pointer">
-                <input type="file" onChange={handleFileChange} accept="image/*" className="absolute inset-0 opacity-0 cursor-pointer z-10" required />
-                {previewUrl ? (
-                  <div className="aspect-square rounded-xl border-2 border-dashed border-amber-500/40 overflow-hidden bg-black">
-                    <img src={previewUrl} alt="Preview" className="w-full h-full object-cover opacity-80" />
-                  </div>
-                ) : (
-                  <div className="aspect-square rounded-xl border-2 border-dashed border-[#1c2a42] flex flex-col items-center justify-center gap-3 group-hover:border-amber-500/40 bg-[#070d18] transition-all">
-                    <svg className="w-8 h-8 text-industrial-600 group-hover:text-amber-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
-                    </svg>
-                    <span className="text-[9px] font-bold uppercase tracking-widest text-industrial-600 group-hover:text-amber-400 transition-colors">Select Biometric Image</span>
+            <p className="text-xs font-medium mb-4" style={{ color: "var(--text-muted)" }}>{STEPS[step].instruction}</p>
+
+            {/* Step 0: Info */}
+            {step === 0 && (
+              <div className="space-y-4">
+                <div>
+                  <label className="text-xs font-medium mb-1.5 block" style={{ color: "var(--text-muted)" }}>Full Name *</label>
+                  <input value={name} onChange={e => setName(e.target.value)} placeholder="John Doe" className="input-field text-sm" />
+                </div>
+                <div>
+                  <label className="text-xs font-medium mb-1.5 block" style={{ color: "var(--text-muted)" }}>Employee ID</label>
+                  <input value={code} onChange={e => setCode(e.target.value)} placeholder="EMP-001" className="input-field text-sm" />
+                </div>
+                <div>
+                  <label className="text-xs font-medium mb-1.5 block" style={{ color: "var(--text-muted)" }}>Phone Number *</label>
+                  <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="62812345678" className="input-field text-sm" />
+                </div>
+              </div>
+            )}
+
+            {/* Steps 1-3: Photo capture */}
+            {(step === 1 || step === 2 || step === 3) && (
+              <div className="space-y-4">
+                {/* Webcam */}
+                {webcamActive && (
+                  <div className="rounded-lg overflow-hidden border" style={{ borderColor: "var(--border)" }}>
+                    <video ref={videoRef} className="w-full aspect-[4/3] object-cover bg-black" autoPlay muted playsInline />
+                    <div className="flex gap-2 p-2" style={{ background: "var(--bg-input)" }}>
+                      <button type="button" onClick={capturePhoto} className="btn-primary flex-1 text-xs py-2">Capture</button>
+                      <button type="button" onClick={closeWebcam} className="btn-ghost flex-1 text-xs py-2">Done</button>
+                    </div>
                   </div>
                 )}
+
+                {/* Action buttons */}
+                {!webcamActive && (
+                  <div className="flex gap-2">
+                    <button type="button" onClick={openWebcam} className="btn-ghost flex-1 flex items-center justify-center gap-2 py-3">
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                      <span className="text-xs">Take Photo</span>
+                    </button>
+                    <label className="btn-ghost flex-1 flex items-center justify-center gap-2 py-3 cursor-pointer">
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                      <span className="text-xs">Upload</span>
+                      <input type="file" accept="image/*" multiple onChange={handleFileUpload} className="hidden" />
+                    </label>
+                  </div>
+                )}
+
+                {/* Photo grid */}
+                {previews[currentPhotoKey].length > 0 && (
+                  <div className="grid grid-cols-4 gap-2">
+                    {previews[currentPhotoKey].map((url, i) => (
+                      <div key={i} className="relative aspect-square rounded-lg overflow-hidden border" style={{ borderColor: "var(--border)" }}>
+                        <img src={url} alt={`${currentPhotoKey} ${i+1}`} className="w-full h-full object-cover" />
+                        <button onClick={() => removePhoto(currentPhotoKey, i)} className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/60 text-white flex items-center justify-center text-[10px]">x</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <p className="text-[11px]" style={{ color: "var(--text-faint)" }}>
+                  {previews[currentPhotoKey].length} photo(s) captured. You can add more or proceed.
+                </p>
               </div>
+            )}
+
+            {/* Step 4: Review */}
+            {step === 4 && (
+              <div className="space-y-4">
+                <div className="p-3 rounded-lg" style={{ background: "var(--bg-input)" }}>
+                  <p className="text-sm font-medium" style={{ color: "var(--text-main)" }}>{name}</p>
+                  <p className="text-xs" style={{ color: "var(--text-faint)" }}>ID: {code || "N/A"} | Phone: {phone}</p>
+                </div>
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <p className="text-[10px] font-medium mb-1" style={{ color: "var(--text-faint)" }}>Front ({photos.front.length})</p>
+                    {previews.front[0] && <img src={previews.front[0]} className="w-full aspect-square rounded-lg object-cover border" style={{ borderColor: "var(--border)" }} alt="Front" />}
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-medium mb-1" style={{ color: "var(--text-faint)" }}>Right ({photos.right.length})</p>
+                    {previews.right[0] ? <img src={previews.right[0]} className="w-full aspect-square rounded-lg object-cover border" style={{ borderColor: "var(--border)" }} alt="Right" /> : <div className="w-full aspect-square rounded-lg border flex items-center justify-center text-[10px]" style={{ borderColor: "var(--border)", color: "var(--text-faint)" }}>Skip</div>}
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-medium mb-1" style={{ color: "var(--text-faint)" }}>Left ({photos.left.length})</p>
+                    {previews.left[0] ? <img src={previews.left[0]} className="w-full aspect-square rounded-lg object-cover border" style={{ borderColor: "var(--border)" }} alt="Left" /> : <div className="w-full aspect-square rounded-lg border flex items-center justify-center text-[10px]" style={{ borderColor: "var(--border)", color: "var(--text-faint)" }}>Skip</div>}
+                  </div>
+                </div>
+                <p className="text-xs" style={{ color: "var(--text-muted)" }}>Total: {photos.front.length + photos.right.length + photos.left.length} photos</p>
+              </div>
+            )}
+
+            {/* Navigation */}
+            <div className="flex gap-2 mt-6">
+              {step > 0 && <button onClick={prevStep} className="btn-ghost flex-1 py-2.5 text-xs">Back</button>}
+              {step < 4 ? (
+                <button onClick={nextStep} disabled={!canProceed()} className="btn-primary flex-1 py-2.5 text-xs disabled:opacity-30">
+                  {step === 0 ? "Start Photos" : "Next"}
+                </button>
+              ) : (
+                <button onClick={handleSubmit} disabled={uploading} className="btn-primary flex-1 py-2.5 text-xs disabled:opacity-30">
+                  {uploading ? "Registering..." : "Register Personnel"}
+                </button>
+              )}
             </div>
-            <button
-              type="submit" disabled={uploading || !selectedFile || !name || !phone}
-              className="btn-primary w-full py-3 text-[11px] uppercase tracking-[0.2em] disabled:opacity-20"
-            >
-              {uploading ? "Synchronizing..." : "Register Personnel"}
-            </button>
-          </form>
+          </div>
         </section>
 
         {/* Face Directory */}
-        <section className="lg:col-span-8">
-          <h2 className="text-[11px] font-bold uppercase tracking-[0.2em] mb-6 text-industrial-400 flex items-center gap-2">
-            <div className="w-1 h-4 rounded-full bg-amber-400" />
-            Registered Database ({(faces?.length || 0)} Personnel)
-          </h2>
-
+        <section className="lg:col-span-7">
+          <div className="flex items-center justify-between mb-5">
+            <h2 className="text-sm font-semibold" style={{ color: "var(--text-main)" }}>Registered ({faces.length})</h2>
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-            {faces?.map(face => (
-              <div key={face.id} className="rounded-xl bg-[#0c1220]/80 border border-[#162033] overflow-hidden group hover:border-amber-500/30 transition-all duration-300">
+            {faces.map(face => (
+              <div
+                key={face.id}
+                className="surface-card overflow-hidden group cursor-pointer"
+                onClick={() => setSelectedFace(face)}
+              >
                 <div className="aspect-[4/3] bg-black relative overflow-hidden">
-                  <img
-                    src={`${API_URL}${face.image_url}`} alt={face.name}
-                    className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-500"
-                  />
+                  <img src={`${API_URL}${face.image_url}`} alt={face.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
                   <button
-                    onClick={() => handleDelete(face.id)}
-                    className="absolute top-2 right-2 w-7 h-7 rounded-lg flex items-center justify-center bg-black/60 text-industrial-400 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
+                    onClick={(e) => { e.stopPropagation(); setDeleteModal({ isOpen: true, id: face.id }); }}
+                    className="absolute top-2 right-2 w-6 h-6 rounded-full bg-black/60 text-white flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-opacity"
                   >
-                    <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12 19 6.41z" /></svg>
+                    x
                   </button>
-                  <div className="absolute bottom-0 left-0 right-0 p-3 bg-gradient-to-t from-black/80 to-transparent">
-                    <span className="bg-amber-500/90 text-white text-[9px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">{face.code || "NO_ID"}</span>
+                  <div className="absolute bottom-0 left-0 right-0 p-2 bg-gradient-to-t from-black/70 to-transparent">
+                    <span className="text-[9px] font-bold text-white px-1.5 py-0.5 rounded" style={{ background: "var(--accent)" }}>{face.code || "NO ID"}</span>
                   </div>
                 </div>
-                <div className="p-3 space-y-1">
-                  <h3 className="text-sm font-bold text-white truncate">{face.name}</h3>
-                  <div className="flex justify-between items-center text-[9px] font-semibold text-industrial-500 tracking-wider">
-                    <span className="font-mono">ID: {face.id.split('_').pop()}</span>
-                    <span>{new Date(face.registered_at).toLocaleDateString()}</span>
-                  </div>
+                <div className="p-3">
+                  <h3 className="text-sm font-medium truncate" style={{ color: "var(--text-main)" }}>{face.name}</h3>
+                  <p className="text-[10px] font-mono" style={{ color: "var(--text-faint)" }}>{new Date(face.registered_at).toLocaleDateString()}</p>
                 </div>
               </div>
             ))}
-
-            {(faces?.length || 0) === 0 && (
-              <div className="col-span-full py-20 rounded-xl border-2 border-dashed border-[#162033] flex flex-col items-center justify-center text-industrial-600">
-                <svg className="w-16 h-16 mb-4 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
-                </svg>
-                <p className="text-xs font-bold uppercase tracking-[0.15em]">No biometric data found</p>
+            {!faces.length && (
+              <div className="col-span-full py-16 text-center">
+                <p className="text-sm" style={{ color: "var(--text-faint)" }}>No personnel registered</p>
               </div>
             )}
           </div>
         </section>
       </div>
+
+      {/* Personnel Detail Overlay */}
+      <DetailPanel
+        isOpen={!!selectedFace}
+        onClose={() => setSelectedFace(null)}
+        title="Personnel Detail"
+        width="460px"
+      >
+        {selectedFace && (
+          <div>
+            {/* Main photo - large */}
+            <div className="mb-4 rounded-xl overflow-hidden border" style={{ borderColor: "var(--border)" }}>
+              <img
+                src={`${API_URL}${selectedFace.image_url}`}
+                alt={selectedFace.name}
+                className="w-full max-h-[280px] object-contain bg-black"
+              />
+            </div>
+
+            {/* Info grid / Edit form */}
+            <div className="space-y-3 mb-4">
+              <div className="p-3 rounded-lg" style={{ background: "var(--bg-input)" }}>
+                <p className="text-[10px] font-medium mb-1" style={{ color: "var(--text-faint)" }}>Full Name</p>
+                {editMode ? (
+                  <input value={editName} onChange={e => setEditName(e.target.value)} className="input-field text-sm" />
+                ) : (
+                  <p className="text-sm font-semibold" style={{ color: "var(--text-main)" }}>{selectedFace.name}</p>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="p-3 rounded-lg" style={{ background: "var(--bg-input)" }}>
+                  <p className="text-[10px] font-medium mb-1" style={{ color: "var(--text-faint)" }}>Employee ID</p>
+                  {editMode ? (
+                    <input value={editCode} onChange={e => setEditCode(e.target.value)} className="input-field text-sm font-mono" />
+                  ) : (
+                    <p className="text-sm font-semibold font-mono" style={{ color: "var(--text-main)" }}>{selectedFace.code || "N/A"}</p>
+                  )}
+                </div>
+                <div className="p-3 rounded-lg" style={{ background: "var(--bg-input)" }}>
+                  <p className="text-[10px] font-medium mb-1" style={{ color: "var(--text-faint)" }}>Phone</p>
+                  {editMode ? (
+                    <input value={editPhone} onChange={e => setEditPhone(e.target.value)} className="input-field text-sm" />
+                  ) : (
+                    <p className="text-sm font-semibold" style={{ color: "var(--text-main)" }}>{selectedFace.phone || "N/A"}</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="p-3 rounded-lg" style={{ background: "var(--bg-input)" }}>
+                <p className="text-[10px] font-medium mb-1" style={{ color: "var(--text-faint)" }}>Registration Date</p>
+                <p className="text-sm" style={{ color: "var(--text-main)" }}>{new Date(selectedFace.registered_at).toLocaleString()}</p>
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="flex gap-3">
+              {editMode ? (
+                <>
+                  <button onClick={() => setEditMode(false)} className="flex-1 py-2.5 rounded-lg text-sm font-medium transition-all" style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-muted)" }}>Cancel</button>
+                  <button
+                    onClick={async () => {
+                      setSavingEdit(true);
+                      try {
+                        const params = new URLSearchParams();
+                        if (editName) params.set("name", editName);
+                        if (editCode) params.set("code", editCode);
+                        if (editPhone) params.set("phone", editPhone);
+                        const r = await fetch(`${API_URL}/faces/${selectedFace.id}?${params}`, { method: "PUT" });
+                        if (r.ok) { showToast("Personnel updated", "success"); fetchFaces(); setSelectedFace(null); setEditMode(false); }
+                        else showToast("Update failed", "error");
+                      } catch { showToast("Update failed", "error"); }
+                      finally { setSavingEdit(false); }
+                    }}
+                    disabled={savingEdit}
+                    className="flex-1 py-2.5 rounded-lg text-sm font-medium text-white transition-all disabled:opacity-30"
+                    style={{ background: "var(--accent)" }}
+                  >
+                    {savingEdit ? "Saving..." : "Save"}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    onClick={() => { setSelectedFace(null); setDeleteModal({ isOpen: true, id: selectedFace.id }); }}
+                    className="py-2.5 px-4 rounded-lg text-sm font-medium transition-all border border-red-500/20 text-red-400 hover:bg-red-500/10"
+                  >
+                    Delete
+                  </button>
+                  <button
+                    onClick={() => { setEditMode(true); setEditName(selectedFace.name); setEditCode(selectedFace.code || ""); setEditPhone(selectedFace.phone || ""); }}
+                    className="flex-1 py-2.5 rounded-lg text-sm font-medium text-white transition-all"
+                    style={{ background: "var(--accent)" }}
+                  >
+                    Edit
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+      </DetailPanel>
+
+      <Modal isOpen={deleteModal.isOpen} onClose={() => setDeleteModal({ isOpen: false, id: null })} onConfirm={() => deleteModal.id && handleDelete(deleteModal.id)} title="Delete Face Data" message="This will permanently remove this person from the recognition database." confirmText="Delete" cancelText="Cancel" type="danger" />
     </div>
   );
 }

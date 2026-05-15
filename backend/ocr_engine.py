@@ -170,15 +170,15 @@ class OCREngine:
 
     def _preprocess_variants(self, crop: np.ndarray) -> List[Tuple[str, np.ndarray]]:
         h, w = crop.shape[:2]
-        target_min_w = 240
-        target_min_h = 120
-        scale = min(3.2, max(1.0, target_min_w / max(w, 1), target_min_h / max(h, 1)))
+        target_min_w = 320
+        target_min_h = 160
+        scale = min(4.0, max(1.2, target_min_w / max(w, 1), target_min_h / max(h, 1)))
         if scale > 1.05:
             crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
 
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8)).apply(gray)
-        denoised = cv2.fastNlMeansDenoising(clahe, h=7, templateWindowSize=7, searchWindowSize=21)
+        clahe = cv2.createCLAHE(clipLimit=3.5, tileGridSize=(8, 8)).apply(gray)
+        denoised = cv2.fastNlMeansDenoising(clahe, h=10, templateWindowSize=7, searchWindowSize=21)
 
         blur = cv2.GaussianBlur(denoised, (0, 0), 1.0)
         sharp = cv2.addWeighted(denoised, 1.7, blur, -0.7, 0)
@@ -223,9 +223,10 @@ class OCREngine:
                     ycenter_ths=0.6,
                     decoder="beamsearch",
                     beamWidth=5,
-                    contrast_ths=0.1,
-                    adjust_contrast=0.7,
+                    contrast_ths=0.05,
+                    adjust_contrast=0.8,
                     allowlist=self.ALLOWLIST,
+                    mag_ratio=1.5,
                 )
             except Exception as e:
                 print(f"[OCR] Read error: {e}")

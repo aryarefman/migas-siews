@@ -120,6 +120,27 @@ async def camera_disable():
     return {"status": "off", "message": "Camera disabled"}
 
 
+@app.get("/camera/snapshot")
+async def camera_snapshot():
+    """Get current camera frame as base64 JPEG for face registration.
+    This allows frontend to 'take photo' without needing direct camera access."""
+    import base64
+    from stream import stream_manager
+    
+    raw = stream_manager._raw_frame
+    if raw is None:
+        raise HTTPException(status_code=503, detail="Camera not available")
+    
+    _, buffer = cv2.imencode(".jpg", raw, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    img_b64 = base64.b64encode(buffer.tobytes()).decode("utf-8")
+    
+    return {
+        "image": f"data:image/jpeg;base64,{img_b64}",
+        "width": raw.shape[1],
+        "height": raw.shape[0],
+    }
+
+
 # ─── Quick Image Analysis (Testing) ──────────────────────────
 @app.post("/ai/analyze-image")
 async def analyze_uploaded_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
@@ -138,6 +159,9 @@ async def analyze_uploaded_image(file: UploadFile = File(...), db: Session = Dep
         result = stream_manager.detector.run_photo(frame)
         persons = result["persons"]
         hazards = result.get("env", [])
+        road_damage = result.get("road", [])
+        safety_cones = result.get("safety_cones", [])
+        vehicles = result.get("vehicles", [])
 
         # 2. Add Identity (OCR + Face Match)
         from face_manager import face_manager
@@ -256,7 +280,7 @@ async def analyze_uploaded_image(file: UploadFile = File(...), db: Session = Dep
                     break
 
         # Only auto-zones on analyze photo (manual zones only on live camera)
-        draw_detections(annotated, persons, zone_person_indices, hazards)
+        draw_detections(annotated, persons, zone_person_indices, hazards, road_damage, safety_cones, vehicles)
         
         # 4. Encode result image to base64
         _, buffer = cv2.imencode(".jpg", annotated)
@@ -274,11 +298,17 @@ async def analyze_uploaded_image(file: UploadFile = File(...), db: Session = Dep
 
         clean_persons = sanitize(persons)
         clean_hazards = sanitize(hazards)
+        clean_road = sanitize(road_damage)
+        clean_cones = sanitize(safety_cones)
+        clean_vehicles = sanitize(vehicles)
 
         return {
-            "summary": { "people_found": len(clean_persons), "hazards_found": len(clean_hazards), "zone_violations": len(zone_violations) },
+            "summary": { "people_found": len(clean_persons), "hazards_found": len(clean_hazards), "road_found": len(clean_road), "vehicles_found": len(clean_vehicles), "zone_violations": len(zone_violations) },
             "detections": clean_persons,
             "hazards": clean_hazards,
+            "road": clean_road,
+            "safety_cones": clean_cones,
+            "vehicles": clean_vehicles,
             "zone_violations": zone_violations,
             "zones_checked": len(zones_data),
             "image": f"data:image/jpeg;base64,{img_str}"

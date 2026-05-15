@@ -48,33 +48,82 @@ export default function FacesPage() {
 
   const currentPhotoKey = STEPS[step]?.id as "front" | "right" | "left";
 
-  // Webcam
+  // Webcam — try browser camera first, fallback to backend live feed snapshot
   const openWebcam = async () => {
     try {
       const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: 640, height: 480 } });
       streamRef.current = s;
       setWebcamActive(true);
       setTimeout(() => { if (videoRef.current) { videoRef.current.srcObject = s; videoRef.current.play(); } }, 100);
-    } catch { showToast("Cannot access webcam", "error"); }
+    } catch {
+      // Fallback: use backend camera snapshot
+      showToast({ message: "Using live camera feed for capture", type: "info" });
+      setWebcamActive(true);
+      // Start polling snapshots from backend into video element via img
+      pollBackendCamera();
+    }
+  };
+
+  const backendSnapshotRef = useRef<HTMLImageElement | null>(null);
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const pollBackendCamera = () => {
+    // Poll backend /camera/snapshot every 200ms for live preview
+    const poll = async () => {
+      try {
+        const res = await fetch(`${API_URL}/camera/snapshot`);
+        if (res.ok) {
+          const data = await res.json();
+          if (backendSnapshotRef.current) {
+            backendSnapshotRef.current.src = data.image;
+          }
+        }
+      } catch {}
+    };
+    poll(); // Initial
+    pollIntervalRef.current = setInterval(poll, 200);
   };
 
   const capturePhoto = () => {
-    if (!videoRef.current) return;
-    const canvas = document.createElement("canvas");
-    canvas.width = videoRef.current.videoWidth;
-    canvas.height = videoRef.current.videoHeight;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.drawImage(videoRef.current, 0, 0);
-    canvas.toBlob((blob) => {
-      if (!blob) return;
-      const file = new File([blob], `${currentPhotoKey}-${Date.now()}.jpg`, { type: "image/jpeg" });
-      addPhoto(file);
-    }, "image/jpeg", 0.9);
+    // If using browser webcam
+    if (videoRef.current && streamRef.current) {
+      const canvas = document.createElement("canvas");
+      canvas.width = videoRef.current.videoWidth || 640;
+      canvas.height = videoRef.current.videoHeight || 480;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.drawImage(videoRef.current, 0, 0);
+      canvas.toBlob((blob) => {
+        if (!blob) return;
+        const file = new File([blob], `${currentPhotoKey}-${Date.now()}.jpg`, { type: "image/jpeg" });
+        addPhoto(file);
+        showToast({ message: "Photo captured!", type: "success" });
+      }, "image/jpeg", 0.9);
+      return;
+    }
+    // Fallback: capture from backend snapshot (img element has base64 src)
+    const imgSrc = backendSnapshotRef.current?.src;
+    if (imgSrc && imgSrc.startsWith("data:image")) {
+      try {
+        const byteString = atob(imgSrc.split(",")[1]);
+        const ab = new ArrayBuffer(byteString.length);
+        const ia = new Uint8Array(ab);
+        for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+        const blob = new Blob([ab], { type: "image/jpeg" });
+        const file = new File([blob], `${currentPhotoKey}-${Date.now()}.jpg`, { type: "image/jpeg" });
+        addPhoto(file);
+        showToast({ message: "Photo captured from live feed!", type: "success" });
+      } catch {
+        showToast({ message: "Capture failed - try again", type: "error" });
+      }
+    } else {
+      showToast({ message: "No camera feed available", type: "error" });
+    }
   };
 
   const closeWebcam = () => {
     if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null; }
+    if (pollIntervalRef.current) { clearInterval(pollIntervalRef.current); pollIntervalRef.current = null; }
     setWebcamActive(false);
   };
 
@@ -106,7 +155,7 @@ export default function FacesPage() {
   };
 
   const handleSubmit = async () => {
-    if (!photos.front.length) { showToast("At least one front photo required", "error"); return; }
+    if (!photos.front.length) { showToast({ message: "At least one front photo required", type: "error" }); return; }
     setUploading(true);
     try {
       // Register with first front photo
@@ -127,7 +176,7 @@ export default function FacesPage() {
       showToast(`${name} registered with ${1 + allExtra.length} photos`, "success");
       resetForm();
       fetchFaces();
-    } catch { showToast("Registration failed", "error"); }
+    } catch { showToast({ message: "Registration failed", type: "error" }); }
     finally { setUploading(false); }
   };
 
@@ -139,11 +188,11 @@ export default function FacesPage() {
   };
 
   const handleDelete = async (id: string) => {
-    try { await fetch(`${API_URL}/faces/${id}`, { method: "DELETE" }); showToast("Deleted", "success"); fetchFaces(); } catch {}
+    try { await fetch(`${API_URL}/faces/${id}`, { method: "DELETE" }); showToast({ message: "Deleted", type: "success" }); fetchFaces(); } catch {}
   };
 
   const handleTrain = async () => {
-    try { const r = await fetch(`${API_URL}/faces/train`, { method: "POST" }); if (r.ok) showToast("Sync & Train complete", "success"); } catch { showToast("Training failed", "error"); }
+    try { const r = await fetch(`${API_URL}/faces/train`, { method: "POST" }); if (r.ok) showToast({ message: "Sync & Train complete", type: "success" }); } catch { showToast({ message: "Training failed", type: "error" }); }
   };
 
   if (loading && !faces.length) return <LoadingScreen message="Loading personnel..." />;
@@ -202,7 +251,8 @@ export default function FacesPage() {
                 {/* Webcam */}
                 {webcamActive && (
                   <div className="rounded-lg overflow-hidden border" style={{ borderColor: "var(--border)" }}>
-                    <video ref={videoRef} className="w-full aspect-[4/3] object-cover bg-black" autoPlay muted playsInline />
+                    <video ref={videoRef} className="w-full aspect-[4/3] object-cover bg-black" autoPlay muted playsInline style={{ display: streamRef.current ? "block" : "none" }} />
+                    <img ref={backendSnapshotRef} className="w-full aspect-[4/3] object-cover bg-black" style={{ display: streamRef.current ? "none" : "block" }} alt="Live feed" />
                     <div className="flex gap-2 p-2" style={{ background: "var(--bg-input)" }}>
                       <button type="button" onClick={capturePhoto} className="btn-primary flex-1 text-xs py-2">Capture</button>
                       <button type="button" onClick={closeWebcam} className="btn-ghost flex-1 text-xs py-2">Done</button>
@@ -391,9 +441,9 @@ export default function FacesPage() {
                         if (editCode) params.set("code", editCode);
                         if (editPhone) params.set("phone", editPhone);
                         const r = await fetch(`${API_URL}/faces/${selectedFace.id}?${params}`, { method: "PUT" });
-                        if (r.ok) { showToast("Personnel updated", "success"); fetchFaces(); setSelectedFace(null); setEditMode(false); }
-                        else showToast("Update failed", "error");
-                      } catch { showToast("Update failed", "error"); }
+                        if (r.ok) { showToast({ message: "Personnel updated", type: "success" }); fetchFaces(); setSelectedFace(null); setEditMode(false); }
+                        else showToast({ message: "Update failed", type: "error" });
+                      } catch { showToast({ message: "Update failed", type: "error" }); }
                       finally { setSavingEdit(false); }
                     }}
                     disabled={savingEdit}

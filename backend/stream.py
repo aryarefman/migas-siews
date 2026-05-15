@@ -35,13 +35,11 @@ from models import Zone, Alert, Setting
 from config import SNAPSHOT_DIR
 
 # ─── Adaptive FPS Configuration ──────────────────────────────
-# The system auto-detects device capability and adjusts render FPS.
-# - GPU (CUDA/MPS): target up to MAX_FPS
-# - CPU: target will settle at whatever the device can sustain
-MAX_FPS = 30          # Upper bound — never exceed this
-MIN_FPS = 8           # Lower bound — below this we're in trouble
-FPS_WINDOW = 30       # Number of frames to average for FPS calculation
-TARGET_UTILIZATION = 0.75  # Use 75% of available frame budget (headroom)
+# System adapts to device capability automatically
+MAX_FPS = 25          # Match MJPEG output — no point rendering faster
+MIN_FPS = 15          # Lower bound — minimum acceptable
+FPS_WINDOW = 15       # Shorter window = faster adaptation
+TARGET_UTILIZATION = 0.85  # Use 85% of frame budget
 
 # ─── Temporal Consistency ─────────────────────────────────────
 # Fire/smoke must appear in N consecutive inference frames before alerting.
@@ -382,13 +380,14 @@ class StreamManager:
         return self.frame
 
     def generate_frames(self):
+        """MJPEG stream generator — capped at 25 FPS for browser compatibility."""
         print("[STREAM] MJPEG Stream client connected")
         while True:
             frame = self.get_frame()
             yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-            # Adaptive sleep — matches render loop FPS so client doesn't
-            # request faster than we can produce
-            time.sleep(self.fps_controller.sleep_interval)
+            # Fixed 25 FPS for MJPEG delivery — browser can't handle more
+            # Internal render loop runs faster but MJPEG output is capped here
+            time.sleep(0.04)  # 25 FPS = 40ms per frame
 
     # =========================================================================
     # Zone Management
@@ -419,9 +418,6 @@ class StreamManager:
             # Atomic update of cache
             self._zones_cache = new_zones
             self._last_zone_refresh = now
-            
-            print(f"[STREAM] Zones refreshed. Active count: {len(new_zones)}")
-            
             return self._zones_cache
         except Exception as e:
             print(f"[STREAM] Zone fetch error: {e}")
@@ -839,6 +835,8 @@ class StreamManager:
         _last_vehicles = []
         _last_zones = []
         _last_violations = []
+        _last_auto_zones = []
+        _last_violated_zone_ids = set()
 
         # FPS logging interval
         _fps_log_interval = 10.0  # Log FPS every 10 seconds
@@ -872,8 +870,9 @@ class StreamManager:
                     _last_vehicles = vehicles
                     _last_zones = self.get_active_zones()
 
-                    # Build auto-zones from current detections
+                    # Build auto-zones from current detections (cached for render loop)
                     auto_zones = build_auto_zones(env_hazards, road, vehicles, w, h)
+                    _last_auto_zones = auto_zones
                     all_zones = _last_zones + auto_zones
 
                     # Check violations on new result (polygon-based for all zones)
@@ -882,29 +881,23 @@ class StreamManager:
                         road_detections=road,
                     )
                     _last_violations = violations
+                    _last_violated_zone_ids = self.violation_checker.get_violated_zone_ids(
+                        persons, all_zones, violations
+                    )
                     for v in violations:
                         asyncio.create_task(self._handle_violation(result["frame"].copy(), v))
-
-                # Periodic zone refresh (every loop check cache, every 1s check DB)
-                _last_zones = self.get_active_zones()
 
                 # Always render: draw last known detections onto latest raw frame
                 raw = self._raw_frame
                 if raw is not None:
                     display = raw.copy()
 
-                    # Build dynamic auto-zones from current env/road/vehicle detections
-                    auto_zones = build_auto_zones(
-                        _last_env, _last_road, _last_vehicles,
-                        self._last_w, self._last_h
-                    )
-                    all_zones = _last_zones + auto_zones
+                    # Draw zone polygons (borders only — fast)
+                    all_zones = _last_zones + _last_auto_zones
+                    if all_zones:
+                        # Use cached violated IDs from last inference (not recalculated every frame)
+                        draw_zones(display, all_zones, _last_violated_zone_ids)
 
-                    # Get violated zone IDs (persons inside any zone)
-                    violated_zone_ids = self.violation_checker.get_violated_zone_ids(
-                        _last_persons, all_zones, _last_violations
-                    )
-                    draw_zones(display, all_zones, violated_zone_ids, int(time.time() * 1000))
                     if _last_persons or _last_env or _last_road or _last_safety_cones or _last_vehicles:
                         violation_indices = self.violation_checker.get_violation_indices(_last_persons, _last_violations)
                         draw_detections(display, _last_persons, violation_indices,

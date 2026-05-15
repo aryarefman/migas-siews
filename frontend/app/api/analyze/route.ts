@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
+// Server-side: use Docker service name for container-to-container communication
+// Falls back to NEXT_PUBLIC_API_URL for local dev
+const BACKEND_URL = process.env.BACKEND_INTERNAL_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
 
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
 
-    const res = await fetch(`${API_URL}/ai/analyze-image`, {
+    const res = await fetch(`${BACKEND_URL}/ai/analyze-image`, {
       method: "POST",
       body: formData,
     });

@@ -122,6 +122,28 @@ export default function AlertFeed({ onAlert, onShutdown }: AlertFeedProps) {
 
   useEffect(() => {
     connectWs();
+    // Load recent alerts from DB on mount
+    fetch(`${API_URL}/alerts?limit=20`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (data?.items) {
+          const mapped: AlertData[] = data.items.map((a: any) => ({
+            alert_id: a.alert_id,
+            zone_name: a.zone_name,
+            zone_id: a.zone_id,
+            risk_level: a.risk_level,
+            timestamp: a.timestamp,
+            confidence: a.confidence,
+            snapshot_url: a.snapshot_url,
+            shutdown_triggered: a.shutdown_triggered,
+            resolved: a.resolved,
+            person_name: a.person_name,
+            uniform_code: a.uniform_code,
+          }));
+          setAlerts(mapped);
+        }
+      })
+      .catch(() => {});
     return () => {
       if (reconnectRef.current) clearTimeout(reconnectRef.current);
       wsRef.current?.close();

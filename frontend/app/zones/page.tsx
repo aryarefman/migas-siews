@@ -13,7 +13,7 @@ interface Zone {
   name: string;
   risk_level: string;
   color: string;
-  is_active: boolean;
+  active: boolean;
   vertices?: number[][];
   created_at?: string;
   zone_type?: string;
@@ -62,7 +62,7 @@ export default function ZonesPage() {
     setEditName(zone.name);
     setEditRisk(zone.risk_level);
     setEditColor(zone.color);
-    setEditActive(zone.is_active);
+    setEditActive(zone.active);
   };
 
   const saveEdit = async () => {
@@ -163,8 +163,8 @@ export default function ZonesPage() {
                   <h3 className="text-sm font-semibold text-[var(--text-main)] truncate">{zone.name}</h3>
                   <div className="flex items-center gap-3 mt-1">
                     <span className={zone.risk_level === "high" ? "badge-high" : "badge-low"}>{zone.risk_level}</span>
-                    <span className={`text-[11px] font-medium ${zone.is_active ? "text-emerald-500" : "text-[var(--text-faint)]"}`}>
-                      {zone.is_active ? "Active" : "Inactive"}
+                    <span className={`text-[11px] font-medium ${zone.active ? "text-emerald-500" : "text-[var(--text-faint)]"}`}>
+                      {zone.active ? "Active" : "Inactive"}
                     </span>
                   </div>
                 </div>
@@ -172,12 +172,12 @@ export default function ZonesPage() {
 
               <div className="flex items-center gap-2 flex-shrink-0">
                 <button
-                  onClick={(e) => { e.stopPropagation(); toggleZone(zone.id, zone.is_active); }}
+                  onClick={(e) => { e.stopPropagation(); toggleZone(zone.id, zone.active); }}
                   className={`btn-ghost text-xs py-1.5 px-3 ${
-                    zone.is_active ? "" : "text-emerald-500 border-emerald-500/20"
+                    zone.active ? "" : "text-emerald-500 border-emerald-500/20"
                   }`}
                 >
-                  {zone.is_active ? "Disable" : "Enable"}
+                  {zone.active ? "Disable" : "Enable"}
                 </button>
                 <button
                   onClick={(e) => { e.stopPropagation(); deleteZone(zone.id, zone.name); }}
@@ -286,7 +286,7 @@ export default function ZonesPage() {
                     <button
                       key={type}
                       type="button"
-                      onClick={() => { const z = zones.find(z => z.id === selectedZone?.id); if (z) { setEditName(z.name); setEditRisk(z.risk_level); setEditColor(z.color); setEditActive(z.is_active); } }}
+                      onClick={() => { const z = zones.find(z => z.id === selectedZone?.id); if (z) { setEditName(z.name); setEditRisk(z.risk_level); setEditColor(z.color); setEditActive(z.active); } }}
                       className={`px-3 py-2 rounded-lg text-[11px] font-medium border transition-all capitalize ${
                         (selectedZone as any)?.zone_type === type ? "border-[var(--accent)]/40 bg-[var(--accent)]/10 text-[var(--accent-light)]" : ""
                       }`}

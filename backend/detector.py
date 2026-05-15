@@ -169,17 +169,29 @@ class UnifiedDetector:
         # Root project dir is one level above backend/
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         model_new = os.path.join(project_root, "model", "New")
+        pretrain_dir = os.path.join(project_root, "model", "Pretrain")
 
         print("[DETECTOR] Initializing UnifiedDetector (5-Stage Pipeline + Vehicles)...")
         print(f"[DETECTOR] model_new={model_new}")
 
-        # Stage 1: Person detection — yolo26n.pt lives in backend/
+        # Stage 1: Person detection
+        # Live: yolo26n (fast) | Photo: yolov8l COCO (strongest, 83.7MB)
         backend_dir = os.path.dirname(os.path.abspath(__file__))
         person_model_path = os.path.join(backend_dir, "yolo26n.pt")
         if not os.path.exists(person_model_path):
             person_model_path = os.path.join(backend_dir, "yolov8n.pt")
         self.person_model = YOLO(person_model_path)
-        print(f"[DETECTOR]   Stage 1 (Person) ✓ — {os.path.basename(person_model_path)}")
+        print(f"[DETECTOR]   Stage 1 (Person-Live)  ✓ — {os.path.basename(person_model_path)}")
+
+        # Stronger model for photo analysis (crowded, occluded, smoke)
+        person_photo_path = os.path.join(pretrain_dir, "yolov8l_coco.pt")
+        if not os.path.exists(person_photo_path):
+            person_photo_path = os.path.join(pretrain_dir, "yolov8m_coco.pt")
+        if os.path.exists(person_photo_path):
+            self.person_model_photo = YOLO(person_photo_path)
+            print(f"[DETECTOR]   Stage 1 (Person-Photo) ✓ — {os.path.basename(person_photo_path)}")
+        else:
+            self.person_model_photo = None
 
         # Stage 2: PPE detection
         ppe_path = os.path.join(model_new, "best_stage2_labeled_safety.pt")
@@ -197,13 +209,22 @@ class UnifiedDetector:
         print("[DETECTOR]   Stage 4 (Road)   ✓")
 
         # Stage 5: Fire & smoke detection
-        fire_smoke_path = os.path.join(model_new, "fire_smoke.pt")
-        if not os.path.exists(fire_smoke_path):
-            print("[DETECTOR]   Stage 5 (Fire/Smoke) — model not found, skipping")
-            self.fire_smoke_model = None
-        else:
-            self.fire_smoke_model = YOLO(fire_smoke_path)
-            print(f"[DETECTOR]   Stage 5 (Fire/Smoke) ✓ - Classes: {self.fire_smoke_model.names}")
+        # Prefer YOLOv26s pretrained (94.9% mAP, has "other" class)
+        pretrain_dir = os.path.join(project_root, "model", "Pretrain")
+        fire_smoke_candidates = [
+            os.path.join(pretrain_dir, "fire_smoke_yolov26s_94mAP.pt"),
+            os.path.join(pretrain_dir, "fire_smoke_yolov26m_wildfire.pt"),
+            os.path.join(pretrain_dir, "fire_smoke_yolo11s.pt"),
+            os.path.join(model_new, "fire_smoke.pt"),
+        ]
+        self.fire_smoke_model = None
+        for fs_path in fire_smoke_candidates:
+            if os.path.exists(fs_path):
+                self.fire_smoke_model = YOLO(fs_path)
+                print(f"[DETECTOR]   Stage 5 (Fire/Smoke) ✓ — {os.path.basename(fs_path)}: {self.fire_smoke_model.names}")
+                break
+        if self.fire_smoke_model is None:
+            print("[DETECTOR]   Stage 5 (Fire/Smoke) — no model found, skipping")
 
         # Vehicle detection — prefer COCO model (reliable for all vehicle types)
         # Fallback chain: yolov8s_coco.pt > vehicle_best.pt
@@ -309,9 +330,9 @@ class UnifiedDetector:
                 })
 
         # Stage 5: Fire & smoke hazards (optional model)
-        # Photo mode: use HIGH threshold — current model has many false positives
-        # on clouds, sunset, haze. Only accept very confident detections.
-        fs_conf = 0.75 if photo_mode else FIRE_SMOKE_CONFIDENCE_THRESHOLD
+        # Stage 5: Fire & smoke hazards
+        # Photo mode: moderate threshold — YOLOv26 model with "other" class is accurate
+        fs_conf = 0.40 if photo_mode else FIRE_SMOKE_CONFIDENCE_THRESHOLD
         fire_smoke_results = self.fire_smoke_model(
             frame, verbose=False, conf=fs_conf, device=DEVICE
         ) if self.fire_smoke_model is not None else []
@@ -326,19 +347,11 @@ class UnifiedDetector:
                 bbox = [x1, y1, x2, y2]
 
                 if photo_mode:
+                    # Skip "other" class — model uses it for non-fire/smoke
                     if label.lower() not in FIRE_SMOKE_LABELS:
                         continue
-                    # Photo mode: aggressive filtering for false positives
-                    area_ratio = bbox_area_ratio(bbox, frame)
-                    center_y = bbox_center_y_ratio(bbox, frame)
-                    # If detection covers >30% of frame → probably sky/clouds/haze
-                    if area_ratio > 0.30:
-                        continue
-                    # If smoke is in top 40% of frame → likely clouds/sky
-                    if label.lower() == "smoke" and center_y < 0.40:
-                        continue
-                    # Reject low-confidence smoke entirely in photos
-                    if label.lower() == "smoke" and conf < 0.80:
+                    # Reject if covers >60% of frame (background)
+                    if bbox_area_ratio(bbox, frame) > 0.60:
                         continue
                 elif not is_valid_fire_smoke_hazard(label, conf, bbox, frame):
                     continue
@@ -352,7 +365,15 @@ class UnifiedDetector:
                 })
 
         # Stage 1: People
-        person_results = self.person_model(frame, verbose=False, conf=self.confidence, device=DEVICE)
+        # Photo mode: use yolov8l (strongest) with lower threshold
+        if photo_mode and self.person_model_photo is not None:
+            person_model = self.person_model_photo
+            person_conf = 0.15
+        else:
+            person_model = self.person_model
+            person_conf = self.confidence
+
+        person_results = person_model(frame, verbose=False, conf=person_conf, device=DEVICE)
         people = []
         for r in person_results:
             if not r.boxes:

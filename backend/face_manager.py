@@ -461,7 +461,7 @@ class FaceManager:
 
         return best_match
 
-    def get_all_faces(self) -> List[dict]:
+    def get_all_faces(self, include_all_samples: bool = False) -> List[dict]:
         """Return all registered faces (without raw encodings)."""
         return [
             {
@@ -470,12 +470,59 @@ class FaceManager:
                 "code": e.get("code", ""),
                 "phone": e.get("phone", ""),
                 "image_url": f"/{e['image_path']}",
-                "photos": [f"/{p}" for p in e.get("photos", [e.get("image_path", "")])],
+                "photos": [f"/{p}" for p in e.get("photos", [e.get("image_path", "")])] if include_all_samples else [f"/{e['image_path']}"],
                 "total_encodings": len(e.get("encodings", [])),
                 "registered_at": e.get("registered_at", ""),
             }
             for e in self._registered
         ]
+
+    def add_face_sample(self, face_id: str, image_bytes: bytes) -> dict:
+        """Add additional face sample (photo from different angle) to existing person."""
+        # Find person
+        target = None
+        for entry in self._registered:
+            if entry["id"] == face_id:
+                target = entry
+                break
+
+        if target is None:
+            return {"success": False, "error": "Face ID not found"}
+
+        # Decode and encode face
+        arr = np.frombuffer(image_bytes, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if img is None:
+            return {"success": False, "error": "Gagal membaca gambar"}
+
+        encoding = self._encode_face(img)
+        if encoding is None:
+            return {"success": False, "error": "Tidak ada wajah terdeteksi dalam gambar"}
+
+        # Add encoding
+        if "encodings" not in target:
+            old_enc = target.get("encoding")
+            target["encodings"] = [old_enc] if old_enc is not None and len(old_enc) > 0 else []
+        target["encodings"].append(encoding)
+
+        # Save photo
+        photo_idx = len(target.get("photos", []))
+        img_filename = f"{face_id}_angle{photo_idx}.jpg"
+        img_path = os.path.join(FACE_DATA_DIR, img_filename)
+        cv2.imwrite(img_path, img)
+
+        if "photos" not in target:
+            target["photos"] = [target.get("image_path", "")]
+        target["photos"].append(f"static/faces/{img_filename}")
+
+        self._save_db()
+
+        return {
+            "success": True,
+            "id": face_id,
+            "total_encodings": len(target["encodings"]),
+            "message": f"Sample added ({len(target['encodings'])} total)",
+        }
 
     def delete_face(self, face_id: str) -> bool:
         """Remove a registered face."""

@@ -183,65 +183,96 @@ def draw_vehicles(frame: np.ndarray, vehicles: List[dict], font_scale: float = 0
         draw_bounding_box(frame, bbox, label, COLOR_VEHICLE, thickness=2, font_scale=font_scale)
 
 
-def draw_zones(frame: np.ndarray, zones: List[dict]):
-    """Draw zone polygons on the frame using custom zone color."""
-    from polygon import point_in_polygon, compute_centroid
+def draw_zones(frame: np.ndarray, zones: List[dict], violated_zones: set = None, time_ms: int = 0):
+    """Draw zone polygons on the frame using custom zone color.
+
+    Args:
+        frame: Video frame (numpy array)
+        zones: List of zone dicts with vertices, color, risk_level, name
+        violated_zones: Set of zone IDs currently violated (these get highlighting)
+        time_ms: Current time in ms for pulsing animation
+    """
+    import time as time_module
+    from polygon import compute_centroid
+
+    if violated_zones is None:
+        violated_zones = set()
+
+    if not zones:
+        return
 
     h, w = frame.shape[:2]
+    # 1. First pass: Draw all semi-transparent fills on a copy of the frame
     overlay = frame.copy()
-
+    has_zones = False
     for zone in zones:
-        vertices = zone["vertices"]
-        if not vertices:
+        vertices = zone.get("vertices", [])
+        if not vertices or len(vertices) < 3:
+            continue
+        
+        has_zones = True
+        color_hex = zone.get("color", "#FF0000").lstrip("#")
+        try:
+            r, g, b = int(color_hex[0:2], 16), int(color_hex[2:4], 16), int(color_hex[4:6], 16)
+            fill_color = (b, g, r)
+        except:
+            fill_color = (0, 0, 200)
+            
+        pts = np.array([[int(v[0] * w), int(v[1] * h)] for v in vertices], dtype=np.int32)
+        cv2.fillPoly(overlay, [pts], fill_color)
+
+    if has_zones:
+        # Blend fills (0.3 opacity)
+        cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
+
+    # Draw solid borders and labels on top (always 100% opaque)
+    for zone in zones:
+        vertices = zone.get("vertices", [])
+        if not vertices or len(vertices) < 3:
             continue
 
-        risk = zone["risk_level"]
-        name = zone["name"]
+        zid = zone.get("id")
+        risk = zone.get("risk_level", "high")
+        name = zone.get("name", "Zone")
         color_hex = zone.get("color", "#FF0000")
+        is_violated = zid in violated_zones
 
-        # Convert hex color to BGR
         try:
             color_hex = color_hex.lstrip("#")
-            r, g, b = int(color_hex[0:2], 16), int(color_hex[2:4], 16), int(color_hex[4:6], 16)
-            border_color = (b, g, r)  # BGR
-            # Slightly darker fill
-            fill_color = (max(0, b - 55), max(0, g - 55), max(0, r - 55))
+            r_v = int(color_hex[0:2], 16)
+            g_v = int(color_hex[2:4], 16)
+            b_v = int(color_hex[4:6], 16)
+            border_color = (b_v, g_v, r_v)
         except (ValueError, IndexError):
-            # Fallback based on risk level
-            if risk == "high":
-                fill_color = (0, 0, 200)
-                border_color = (0, 0, 255)
-            else:
-                fill_color = (0, 200, 200)
-                border_color = (0, 255, 255)
+            border_color = (0, 0, 255) if risk == "high" else (0, 255, 255)
 
-        # Convert normalized coords to pixel coords
-        pts = np.array(
-            [[int(v[0] * w), int(v[1] * h)] for v in vertices],
-            dtype=np.int32
-        )
+        pts = np.array([[int(v[0] * w), int(v[1] * h)] for v in vertices], dtype=np.int32)
 
-        # Semi-transparent fill
-        cv2.fillPoly(overlay, [pts], fill_color)
-        cv2.polylines(frame, [pts], True, border_color, 2, cv2.LINE_AA)
+        if is_violated:
+            # Highlighted: brighter color + thicker border + pulsing
+            pulse = 0.7 + 0.3 * abs(time_module.sin(time_module.time() * 3))
+            r_b = min(255, int(r_v * (1 + 0.5 * pulse)))
+            g_b = min(255, int(g_v * (1 + 0.5 * pulse)))
+            b_b = min(255, int(b_v * (1 + 0.5 * pulse)))
+            highlight_color = (b_b, g_b, r_b)
+            cv2.polylines(frame, [pts], True, highlight_color, 3, cv2.LINE_AA)
 
-        # Zone name at centroid
+            # Draw "!" warning badge
+            cx_label = int(sum(v[0] for v in vertices) / len(vertices) * w)
+            cy_label = int(sum(v[1] for v in vertices) / len(vertices) * h)
+            cv2.circle(frame, (cx_label + 40, cy_label - 30), 12, (0, 0, 255), -1, cv2.LINE_AA)
+            cv2.putText(frame, "!", (cx_label + 36, cy_label - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+        else:
+            cv2.polylines(frame, [pts], True, border_color, 2, cv2.LINE_AA)
+
+        # Draw Label
         centroid = compute_centroid(vertices)
         cx, cy = int(centroid[0] * w), int(centroid[1] * h)
         label = f"{name} ({risk.upper()})"
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-        cv2.rectangle(
-            frame,
-            (cx - tw // 2 - 4, cy - th - 6),
-            (cx + tw // 2 + 4, cy + 4),
-            (0, 0, 0), -1
-        )
-        cv2.putText(
-            frame, label, (cx - tw // 2, cy),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.5, border_color, 1, cv2.LINE_AA
-        )
 
-    cv2.addWeighted(overlay, 0.25, frame, 0.75, 0, frame)
+        cv2.rectangle(frame, (cx - tw // 2 - 4, cy - th - 6), (cx + tw // 2 + 4, cy + 4), (0, 0, 0), -1)
+        cv2.putText(frame, label, (cx - tw // 2, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.5, border_color, 1, cv2.LINE_AA)
 
 
 def draw_detections(

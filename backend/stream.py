@@ -15,6 +15,7 @@ Temporal consistency: fire/smoke requires N consecutive frames before alert.
 import os
 import cv2
 import time
+import json
 import asyncio
 import threading
 import queue
@@ -54,6 +55,88 @@ _adaptive_delta: dict = defaultdict(float)
 _ADAPTIVE_STEP_UP = 0.05    # raise threshold on FALSE POS click
 _ADAPTIVE_MAX_DELTA = 0.30  # cap so threshold never goes above base + 0.30
 _ADAPTIVE_DECAY = 0.005     # slowly lower delta over time (per inference cycle)
+
+
+# ─── Auto-Zone Helpers ──────────────────────────────────────────
+def bbox_to_polygon_vertices(bbox, padding_pct=0.15, frame_w=None, frame_h=None):
+    """Convert [x1,y1,x2,y2] to 4-corner polygon with optional padding.
+
+    If frame_w/frame_h provided, returns normalized (0-1) vertices.
+    Otherwise returns pixel-space vertices.
+    """
+    x1, y1, x2, y2 = bbox
+    pad_x = (x2 - x1) * padding_pct
+    pad_y = (y2 - y1) * padding_pct
+
+    if frame_w and frame_h:
+        return [
+            [(x1 - pad_x) / frame_w, (y1 - pad_y) / frame_h],
+            [(x2 + pad_x) / frame_w, (y1 - pad_y) / frame_h],
+            [(x2 + pad_x) / frame_w, (y2 + pad_y) / frame_h],
+            [(x1 - pad_x) / frame_w, (y2 + pad_y) / frame_h],
+        ]
+    else:
+        return [
+            [x1 - pad_x, y1 - pad_y],
+            [x2 + pad_x, y1 - pad_y],
+            [x2 + pad_x, y2 + pad_y],
+            [x1 - pad_x, y2 + pad_y],
+        ]
+
+
+def build_auto_zones(env_hazards, road_detections, vehicles, frame_w, frame_h):
+    """Build dynamic polygon auto-zones from current detections."""
+    auto_zones = []
+
+    # Environmental hazards (fire, smoke, open-hole, barricade, etc.)
+    for i, haz in enumerate(env_hazards):
+        bbox = haz.get("bbox", [])
+        if len(bbox) != 4:
+            continue
+        label = haz.get("label", haz.get("class_name", "hazard")).lower()
+        vertices = bbox_to_polygon_vertices(bbox, padding_pct=0.15, frame_w=frame_w, frame_h=frame_h)
+        auto_zones.append({
+            "id": f"auto_env_{i}_{label}",
+            "name": f"AUTO: {label.upper()}",
+            "vertices": vertices,
+            "color": "#FF0000",
+            "risk_level": "high",
+            "auto": True,
+        })
+
+    # Road damage (pothole/lubang)
+    for i, rd in enumerate(road_detections):
+        bbox = rd.get("bbox", [])
+        if len(bbox) != 4:
+            continue
+        label = rd.get("label", rd.get("class_name", "lubang")).upper()
+        vertices = bbox_to_polygon_vertices(bbox, padding_pct=0.20, frame_w=frame_w, frame_h=frame_h)
+        auto_zones.append({
+            "id": f"auto_road_{i}_{label}",
+            "name": f"DANGER: {label}",
+            "vertices": vertices,
+            "color": "#FF8C00",
+            "risk_level": "high",
+            "auto": True,
+        })
+
+    # Vehicles
+    for i, veh in enumerate(vehicles):
+        bbox = veh.get("bbox", [])
+        if len(bbox) != 4:
+            continue
+        label = veh.get("label", veh.get("class_name", "vehicle")).upper()
+        vertices = bbox_to_polygon_vertices(bbox, padding_pct=0.10, frame_w=frame_w, frame_h=frame_h)
+        auto_zones.append({
+            "id": f"auto_veh_{i}_{label}",
+            "name": f"VEHICLE: {label}",
+            "vertices": vertices,
+            "color": "#FF00FF",
+            "risk_level": "medium",
+            "auto": True,
+        })
+
+    return auto_zones
 
 
 class AdaptiveFPSController:
@@ -159,10 +242,33 @@ def _decay_adaptive_thresholds():
         _adaptive_delta[k] = max(0.0, _adaptive_delta[k] - _ADAPTIVE_DECAY)
 
 
+def _overlaps_any_person(bbox, person_bboxes, iou_threshold=0.3):
+    """Check if a detection bbox overlaps significantly with any person bbox."""
+    x1, y1, x2, y2 = bbox
+    for pb in person_bboxes:
+        px1, py1, px2, py2 = pb
+        # Calculate IoU
+        ix1 = max(x1, px1)
+        iy1 = max(y1, py1)
+        ix2 = min(x2, px2)
+        iy2 = min(y2, py2)
+        if ix2 <= ix1 or iy2 <= iy1:
+            continue
+        intersection = (ix2 - ix1) * (iy2 - iy1)
+        area_det = max(0, (x2 - x1) * (y2 - y1))
+        area_person = max(0, (px2 - px1) * (py2 - py1))
+        # Check if detection is mostly inside person OR person is mostly inside detection
+        if area_det > 0 and intersection / area_det > iou_threshold:
+            return True
+        if area_person > 0 and intersection / area_person > iou_threshold:
+            return True
+    return False
+
+
 class StreamManager:
     def __init__(self):
         self.detector: Optional[MultiStagePipeline] = None
-        self.violation_checker = ViolationChecker(cooldown_seconds=5)
+        self.violation_checker = ViolationChecker(cooldown_seconds=7)
         self.ws_clients: Set = set()
         self.running = False
         self.camera_state = "offline"
@@ -170,14 +276,20 @@ class StreamManager:
         self._reconnect_attempts = 0
         self._next_reconnect_at = 0.0
         self._last_successful_frame_at = 0.0
+        self._last_zone_refresh = 0.0
+        self._zones_cache = []
 
         # Adaptive FPS controller — adjusts render rate to device capability
         self.fps_controller = AdaptiveFPSController()
 
+        # Last known frame dimensions (for auto-zone rendering)
+        self._last_w = 640
+        self._last_h = 480
+
         # Settings
         self._camera_source = "0"
         self._confidence = 0.5
-        self._detection_interval = 3
+        self._detection_interval = 1
         self._notify_cooldown = 5
 
         # Simulation mode
@@ -246,7 +358,7 @@ class StreamManager:
             self._camera_source = settings.get("camera_source", "0")
             self._confidence = float(settings.get("confidence_threshold", "0.5"))
             self._detection_interval = int(settings.get("detection_interval", "3"))
-            self._notify_cooldown = int(settings.get("notify_cooldown", "300"))
+            self._notify_cooldown = int(settings.get("notify_cooldown", "7"))
             self.violation_checker._cooldown_seconds = self._notify_cooldown
         finally:
             db.close()
@@ -264,9 +376,7 @@ class StreamManager:
 
     def get_frame(self) -> bytes:
         if self.frame is None:
-            black = np.zeros((480, 640, 3), dtype=np.uint8)
-            cv2.putText(black, "INITIALIZING...", (180, 240),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            black = np.zeros((720, 1280, 3), dtype=np.uint8)
             _, jp = cv2.imencode(".jpg", black)
             return jp.tobytes()
         return self.frame
@@ -284,11 +394,18 @@ class StreamManager:
     # Zone Management
     # =========================================================================
 
-    def get_active_zones(self) -> List[dict]:
+    def get_active_zones(self, force: bool = False) -> List[dict]:
+        """Get zones from DB, with caching to avoid slamming the DB every frame."""
+        now = time.time()
+        # If forced or cache is empty or cache expired (reduced to 1s for better sync)
+        if not force and self._zones_cache and (now - self._last_zone_refresh < 1.0):
+            return self._zones_cache
+
         db = SessionLocal()
         try:
+            # Only get zones that are explicitly active
             zones = db.query(Zone).filter(Zone.active == True).all()
-            return [
+            new_zones = [
                 {
                     "id": z.id,
                     "name": z.name,
@@ -298,8 +415,24 @@ class StreamManager:
                 }
                 for z in zones
             ]
+            
+            # Atomic update of cache
+            self._zones_cache = new_zones
+            self._last_zone_refresh = now
+            
+            print(f"[STREAM] Zones refreshed. Active count: {len(new_zones)}")
+            
+            return self._zones_cache
+        except Exception as e:
+            print(f"[STREAM] Zone fetch error: {e}")
+            return self._zones_cache # return last known on error
         finally:
             db.close()
+
+    def refresh_zones(self):
+        """Force immediate refresh of zones from DB."""
+        self._zones_cache = [] # Clear cache first
+        self.get_active_zones(force=True)
 
     # =========================================================================
     # Capture Thread — reads camera as fast as possible, drops old frames
@@ -371,8 +504,9 @@ class StreamManager:
             if frame_count % self._detection_interval == 0:
                 self._put_frame(frame)
 
-            # Store raw frame — async loop will draw overlay and write self.frame
+            # Store raw frame and dimensions — async loop will draw overlay and write self.frame
             self._raw_frame = frame
+            self._last_h, self._last_w = frame.shape[:2]
 
         if cap:
             cap.release()
@@ -397,6 +531,9 @@ class StreamManager:
 
     def _inference_loop(self):
         """Dedicated thread: pulls frames from queue, runs YOLO, pushes results."""
+        _face_ocr_counter = 0
+        _last_ocr_codes = {}   # cache: person index -> ocr_code
+
         while self.running:
             try:
                 frame = self._frame_queue.get(timeout=1.0)
@@ -411,23 +548,49 @@ class StreamManager:
                 persons, env_hazards, road, safety_cones = self.detector.detect_base(frame)
                 vehicles = self.detector.detect_vehicles(frame)
 
+                # Cross-stage NMS: suppress env/road false positives that overlap with persons
+                if persons and (env_hazards or road):
+                    person_bboxes_raw = [p["bbox"] for p in persons]
+                    env_hazards = [e for e in env_hazards if not _overlaps_any_person(e["bbox"], person_bboxes_raw, 0.3)]
+                    road = [r for r in road if not _overlaps_any_person(r["bbox"], person_bboxes_raw, 0.3)]
+
                 if persons:
                     persons = self.detector.detect_ppe_full_frame(frame, persons)
                     person_bboxes = [p["bbox"] for p in persons]
+
+                    # Face recognition: ALWAYS run (no throttle)
+                    # Face name is critical for alerts — must be available immediately
                     face_results = face_manager.recognize_faces(frame, person_bboxes)
-                    ocr_results = ocr_engine.read_all_codes(frame, person_bboxes)
+
+                    # OCR: throttle every 3 cycles (less critical, slower)
+                    _face_ocr_counter += 1
+                    if _face_ocr_counter >= 3:
+                        _face_ocr_counter = 0
+                        ocr_results = ocr_engine.read_all_codes(frame, person_bboxes)
+                        _last_ocr_codes = {}
+                        for i, det in enumerate(persons):
+                            if i < len(ocr_results) and ocr_results[i]:
+                                _last_ocr_codes[i] = ocr_results[i].get("code")
+
+                    # Apply face + cached OCR results
                     for i, det in enumerate(persons):
                         det["face_name"] = "Unknown"
                         det["ocr_code"] = None
-                        if i < len(face_results) and face_results[i]:
-                            det["face_name"] = face_results[i].get("name", "Unknown")
-                        if i < len(ocr_results) and ocr_results[i]:
-                            det["ocr_code"] = ocr_results[i].get("code")
-                        if det["face_name"] == "Unknown" and det["ocr_code"]:
-                            for p in face_manager._registered:
-                                if p.get("code") == det["ocr_code"]:
-                                    det["face_name"] = p["name"]
-                                    break
+                        try:
+                            if i < len(face_results) and face_results[i]:
+                                det["face_name"] = face_results[i].get("name", "Unknown")
+                                if det["face_name"] != "Unknown":
+                                    print(f"[FACE-MATCH] Recognized: {det['face_name']} (conf={face_results[i].get('confidence', 0):.3f})")
+                            if i in _last_ocr_codes:
+                                det["ocr_code"] = _last_ocr_codes[i]
+                            if det["face_name"] == "Unknown" and det["ocr_code"]:
+                                for p in face_manager._registered:
+                                    if p.get("code") == det["ocr_code"]:
+                                        det["face_name"] = p["name"]
+                                        print(f"[OCR-MATCH] Code '{det['ocr_code']}' -> {det['face_name']}")
+                                        break
+                        except (AttributeError, TypeError):
+                            pass
 
                 # Apply adaptive threshold decay
                 _decay_adaptive_thresholds()
@@ -537,6 +700,7 @@ class StreamManager:
                     violation_type=violation.violation_type,
                     person_name=violation.person_name,
                     uniform_code=violation.uniform_code,
+                    ppe_detail=json.dumps(violation.ppe_detail) if violation.ppe_detail else None,
                 )
                 db.add(alert)
                 db.commit()
@@ -585,6 +749,8 @@ class StreamManager:
                 "shutdown_triggered": shutdown_triggered,
                 "person_name": violation.person_name,
                 "uniform_code": violation.uniform_code,
+                "violation_type": violation.violation_type,
+                "ppe_detail": violation.ppe_detail,
             }
             await self._broadcast_to_ws(ws_event)
 
@@ -629,14 +795,8 @@ class StreamManager:
     # =========================================================================
 
     def _offline_frame(self):
-        frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        status = self.camera_status().upper()
-        cv2.putText(frame, "KAMERA OFFLINE", (120, 210),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3, cv2.LINE_AA)
-        cv2.putText(frame, f"Status: {status}", (165, 255),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (200, 200, 200), 1, cv2.LINE_AA)
-        cv2.putText(frame, f"Source: {self._camera_source}", (165, 285),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (160, 160, 160), 1, cv2.LINE_AA)
+        """Generate a clean, minimal offline frame — just black."""
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
         return frame
 
     def _store_offline_frame(self):
@@ -712,19 +872,39 @@ class StreamManager:
                     _last_vehicles = vehicles
                     _last_zones = self.get_active_zones()
 
-                    # Check violations on new result
+                    # Build auto-zones from current detections
+                    auto_zones = build_auto_zones(env_hazards, road, vehicles, w, h)
+                    all_zones = _last_zones + auto_zones
+
+                    # Check violations on new result (polygon-based for all zones)
                     violations = self.violation_checker.check_all_violations(
-                        persons, env_hazards, _last_zones, w, h
+                        persons, env_hazards, all_zones, w, h,
+                        road_detections=road,
                     )
                     _last_violations = violations
                     for v in violations:
                         asyncio.create_task(self._handle_violation(result["frame"].copy(), v))
 
+                # Periodic zone refresh (every loop check cache, every 1s check DB)
+                _last_zones = self.get_active_zones()
+
                 # Always render: draw last known detections onto latest raw frame
                 raw = self._raw_frame
                 if raw is not None:
                     display = raw.copy()
-                    draw_zones(display, _last_zones)
+
+                    # Build dynamic auto-zones from current env/road/vehicle detections
+                    auto_zones = build_auto_zones(
+                        _last_env, _last_road, _last_vehicles,
+                        self._last_w, self._last_h
+                    )
+                    all_zones = _last_zones + auto_zones
+
+                    # Get violated zone IDs (persons inside any zone)
+                    violated_zone_ids = self.violation_checker.get_violated_zone_ids(
+                        _last_persons, all_zones, _last_violations
+                    )
+                    draw_zones(display, all_zones, violated_zone_ids, int(time.time() * 1000))
                     if _last_persons or _last_env or _last_road or _last_safety_cones or _last_vehicles:
                         violation_indices = self.violation_checker.get_violation_indices(_last_persons, _last_violations)
                         draw_detections(display, _last_persons, violation_indices,

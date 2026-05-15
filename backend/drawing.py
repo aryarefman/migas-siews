@@ -289,7 +289,7 @@ def draw_vehicles(frame: np.ndarray, vehicles: List[dict], font_scale: float = 0
 
 
 def draw_zones(frame: np.ndarray, zones: List[dict], violated_zones: set = None, time_ms: int = 0):
-    """Draw zone polygons — borders only, no fill. Maximum performance."""
+    """Draw zone polygons with fill + border. GPU inference frees CPU for rendering."""
     from polygon import compute_centroid
 
     if not zones:
@@ -299,6 +299,7 @@ def draw_zones(frame: np.ndarray, zones: List[dict], violated_zones: set = None,
         violated_zones = set()
 
     h, w = frame.shape[:2]
+    overlay = frame.copy()
 
     for zone in zones:
         vertices = zone.get("vertices", [])
@@ -316,6 +317,11 @@ def draw_zones(frame: np.ndarray, zones: List[dict], violated_zones: set = None,
             border_color = (0, 0, 255)
 
         pts = np.array([[int(v[0] * w), int(v[1] * h)] for v in vertices], dtype=np.int32)
+
+        # Fill on overlay
+        cv2.fillPoly(overlay, [pts], border_color)
+
+        # Border on frame directly
         thickness = 3 if is_violated else 2
         cv2.polylines(frame, [pts], True, border_color, thickness, cv2.LINE_AA)
 
@@ -325,6 +331,10 @@ def draw_zones(frame: np.ndarray, zones: List[dict], violated_zones: set = None,
         (tw, th), _ = cv2.getTextSize(name, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
         cv2.rectangle(frame, (cx - tw // 2 - 2, cy - th - 3), (cx + tw // 2 + 2, cy + 2), (0, 0, 0), -1)
         cv2.putText(frame, name, (cx - tw // 2, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.4, border_color, 1, cv2.LINE_AA)
+
+    # Blend fill
+    alpha = 0.30 if violated_zones else 0.20
+    cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
 
 
 def draw_detections(

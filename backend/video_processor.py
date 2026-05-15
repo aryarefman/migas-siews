@@ -251,6 +251,33 @@ class VideoProcessor:
             if out is not None:
                 out.release()
 
+            # Convert to browser-compatible H264 MP4 using FFmpeg
+            final_output = output_path.replace("_annotated.", "_final.")
+            if not final_output.endswith(".mp4"):
+                final_output = final_output.rsplit(".", 1)[0] + ".mp4"
+
+            import subprocess
+            try:
+                ffmpeg_cmd = [
+                    "ffmpeg", "-y", "-i", output_path,
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                    "-pix_fmt", "yuv420p",  # Required for browser compatibility
+                    "-movflags", "+faststart",  # Enable streaming
+                    final_output
+                ]
+                result_ffmpeg = subprocess.run(ffmpeg_cmd, capture_output=True, timeout=300)
+                if result_ffmpeg.returncode == 0 and os.path.exists(final_output):
+                    # Replace original with H264 version
+                    os.remove(output_path)
+                    os.rename(final_output, output_path)
+                    print(f"[VIDEO] Converted to H264: {output_path}")
+                else:
+                    print(f"[VIDEO] FFmpeg failed, keeping original codec: {result_ffmpeg.stderr.decode()[:200]}")
+            except FileNotFoundError:
+                print("[VIDEO] FFmpeg not installed, keeping original codec")
+            except Exception as e:
+                print(f"[VIDEO] FFmpeg error: {e}")
+
             # Verify output file exists and has content
             if os.path.exists(output_path):
                 file_size = os.path.getsize(output_path)

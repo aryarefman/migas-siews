@@ -1,12 +1,15 @@
-FROM python:3.11-slim
+FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04
 
 WORKDIR /app
 
-# Install system deps for OpenCV, YOLO, and dlib (face_recognition)
+# Install Python 3.11 + system deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 python3.11-venv python3-pip python3.11-dev \
     libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
-    curl \
-    cmake g++ make libopenblas-dev liblapack-dev \
+    curl cmake g++ make libopenblas-dev liblapack-dev \
+    ffmpeg \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt .
@@ -14,7 +17,7 @@ RUN pip install --no-cache-dir dlib==19.24.6 && \
     pip install --no-cache-dir face_recognition==1.3.0 && \
     pip install --no-cache-dir -r requirements.txt
 
-# Remove build tools after pip install to keep image smaller
+# Remove build tools
 RUN apt-get purge -y cmake g++ make && apt-get autoremove -y || true
 
 COPY backend/ ./backend/

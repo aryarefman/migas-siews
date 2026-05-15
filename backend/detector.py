@@ -27,19 +27,39 @@ from detection_models import (
 
 
 def _select_device() -> str:
-    """Auto-detect best available compute device: CUDA > MPS > CPU."""
+    """Auto-detect best available compute device: CUDA > MPS > CPU.
+    
+    Performs a real tensor operation to verify GPU kernel compatibility.
+    Falls back gracefully to CPU if GPU is detected but kernels are incompatible
+    (e.g. RTX 5090 sm_120 with older PyTorch builds).
+    """
     try:
         import torch
         if torch.cuda.is_available():
             name = torch.cuda.get_device_name(0)
-            print(f"[DETECTOR] GPU detected: {name} — using CUDA")
-            return "cuda"
+            # Verify GPU actually works by running a small tensor op
+            try:
+                test = torch.zeros(1, device="cuda")
+                _ = test + 1
+                del test
+                torch.cuda.empty_cache()
+                print(f"[DETECTOR] GPU verified: {name} — using CUDA")
+                return "cuda"
+            except RuntimeError as e:
+                print(f"[DETECTOR] GPU detected ({name}) but kernel incompatible: {e}")
+                print(f"[DETECTOR] Falling back to CPU. To fix: upgrade PyTorch with matching CUDA version.")
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            print("[DETECTOR] Apple MPS detected — using MPS")
-            return "mps"
-    except Exception:
-        pass
-    print("[DETECTOR] No GPU found — using CPU")
+            try:
+                test = torch.zeros(1, device="mps")
+                _ = test + 1
+                del test
+                print("[DETECTOR] Apple MPS verified — using MPS")
+                return "mps"
+            except RuntimeError:
+                print("[DETECTOR] MPS detected but not functional, falling back to CPU")
+    except Exception as e:
+        print(f"[DETECTOR] Error during device detection: {e}")
+    print("[DETECTOR] Using CPU")
     return "cpu"
 
 DEVICE = _select_device()

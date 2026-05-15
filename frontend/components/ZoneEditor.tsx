@@ -1,6 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import { showToast } from "./Toast";
+import Modal from "./Modal";
+import DetailPanel from "./DetailPanel";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
 
@@ -11,6 +14,7 @@ interface ZoneData {
   color: string;
   active: boolean;
   risk_level: string;
+  created_at?: string;
 }
 
 interface ZoneEditorProps {
@@ -22,94 +26,149 @@ interface ZoneEditorProps {
 
 export default function ZoneEditor({ zones, onRefresh, onStartDrawing, drawingMode }: ZoneEditorProps) {
   const [loading, setLoading] = useState<number | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [targetZone, setTargetZone] = useState<ZoneData | null>(null);
+  const [selectedZone, setSelectedZone] = useState<ZoneData | null>(null);
+
+  // Inline edit state
+  const [editName, setEditName] = useState("");
+  const [editRisk, setEditRisk] = useState("");
+  const [editColor, setEditColor] = useState("");
+  const [editActive, setEditActive] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const openDetail = (zone: ZoneData) => {
+    setSelectedZone(zone);
+    setEditName(zone.name);
+    setEditRisk(zone.risk_level);
+    setEditColor(zone.color);
+    setEditActive(zone.active);
+  };
+
+  const saveEdit = async () => {
+    if (!selectedZone) return;
+    setSaving(true);
+    try {
+      const res = await fetch(`${API_URL}/polygons/${selectedZone.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: editName,
+          risk_level: editRisk,
+          color: editColor,
+          active: editActive,
+        }),
+      });
+      if (res.ok) {
+        showToast(`Zone "${editName}" updated`, "success");
+        onRefresh();
+        setSelectedZone(null);
+      } else {
+        showToast("Failed to update zone", "error");
+      }
+    } catch {
+      showToast("Failed to update zone", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const toggleZone = async (zone: ZoneData) => {
     setLoading(zone.id);
     try {
       await fetch(`${API_URL}/polygons/${zone.id}`, {
-        method: "PUT", headers: { "Content-Type": "application/json" },
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ active: !zone.active }),
       });
       onRefresh();
-    } catch (err) { console.error("Failed to toggle zone", err); }
-    finally { setLoading(null); }
+      showToast(`Zone "${zone.name}" ${!zone.active ? "enabled" : "disabled"}`, "success");
+    } catch {
+      showToast("Failed to toggle zone", "error");
+    } finally {
+      setLoading(null);
+    }
   };
 
-  const deleteZone = async (zone: ZoneData) => {
-    if (!confirm(`Hapus zona "${zone.name}"?`)) return;
-    setLoading(zone.id);
+  const deleteZone = (zone: ZoneData) => {
+    setTargetZone(zone);
+    setModalOpen(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!targetZone) return;
+    setLoading(targetZone.id);
     try {
-      await fetch(`${API_URL}/polygons/${zone.id}`, { method: "DELETE" });
+      await fetch(`${API_URL}/polygons/${targetZone.id}`, { method: "DELETE" });
       onRefresh();
-    } catch (err) { console.error("Failed to delete zone", err); }
-    finally { setLoading(null); }
+      showToast(`Zone "${targetZone.name}" deleted`, "success");
+      if (selectedZone && selectedZone.id === targetZone.id) {
+        setSelectedZone(null);
+      }
+    } catch {
+      showToast("Failed to delete zone", "error");
+    } finally {
+      setLoading(null);
+      setTargetZone(null);
+    }
   };
 
-  const activeCount = zones.filter((z) => z.active).length;
+  const deleteFromDetail = () => {
+    if (!selectedZone) return;
+    setSelectedZone(null);
+    setTargetZone(selectedZone);
+    setModalOpen(true);
+  };
 
   return (
     <div className="flex flex-col">
-      {/* Header */}
-      <div className="p-4 border-b border-[#162033]">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-[10px] font-bold text-white tracking-[0.15em] uppercase flex items-center gap-2">
-            <div className="w-5 h-5 rounded bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
-              <svg className="w-3 h-3 text-amber-400" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/>
-              </svg>
-            </div>
-            Area Pantau
-          </h2>
-          <span className="text-[9px] text-industrial-500 font-bold bg-[#070d18] px-2 py-0.5 rounded-md border border-[#162033]">
-            {activeCount} Aktif
-          </span>
-        </div>
+      {/* Add Zone Button */}
+      <div className="p-3">
         <button
           onClick={onStartDrawing}
           disabled={drawingMode}
-          className={`w-full py-2.5 rounded-lg text-[11px] font-bold uppercase tracking-wider transition-all ${
+          className={`w-full py-2.5 rounded-lg text-xs font-semibold transition-all ${
             drawingMode
-              ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/25 cursor-not-allowed"
-              : "bg-gradient-to-r from-amber-500 to-amber-600 text-white shadow-lg shadow-amber-500/20 hover:from-amber-400 hover:to-amber-500 active:scale-[0.98]"
+              ? "bg-[var(--accent)]/10 text-[var(--accent-light)] border border-[var(--accent)]/20 cursor-not-allowed"
+              : "bg-[var(--accent)] text-white hover:bg-[var(--accent-light)] shadow-md shadow-[var(--accent)]/20"
           }`}
         >
-          {drawingMode ? "Drawing..." : "+ Tambah Zona"}
+          {drawingMode ? "Drawing..." : "+ Add Zone"}
         </button>
       </div>
 
       {/* Zone List */}
-      <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
+      <div className="flex-1 overflow-y-auto px-2 pb-2 space-y-1.5">
         {zones.length === 0 ? (
-          <div className="text-center py-12 text-industrial-600">
-            <svg className="w-8 h-8 mx-auto mb-3 opacity-15" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M3 5v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2H5c-1.11 0-2 .9-2 2zm12 4c0 1.66-1.34 3-3 3s-3-1.34-3-3 1.34-3 3-3 3 1.34 3 3zm-9 8c0-2 4-3.1 6-3.1s6 1.1 6 3.1v1H6v-1z"/>
-            </svg>
-            <p className="text-[10px] font-bold uppercase tracking-wider">No zones defined</p>
+          <div className="text-center py-10">
+            <p className="text-[11px] text-gray-500 font-medium">No zones defined</p>
+            <p className="text-[10px] text-gray-600 mt-1">Click + Add Zone to create one</p>
           </div>
         ) : (
           zones.map((zone) => (
             <div
               key={zone.id}
-              className={`relative p-3 rounded-xl border transition-all duration-200 ${
+              className={`p-3 rounded-xl border transition-all duration-200 cursor-pointer ${
                 zone.active
-                  ? "bg-[#0f1729]/60 border-[#1c2a42]/60 hover:border-[#243b5c]"
-                  : "bg-[#070d18]/40 border-[#162033]/30 opacity-50"
+                  ? "bg-white/[0.02] border-white/[0.06] hover:border-white/10"
+                  : "bg-black/20 border-white/[0.03] opacity-50"
               }`}
+              onClick={() => openDetail(zone)}
             >
-              <div className="flex items-start justify-between gap-2">
-                <div className="flex items-center gap-2.5 min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
                   <div
-                    className="w-3 h-3 rounded-full flex-shrink-0 ring-2 ring-offset-1 ring-offset-[#0c1220]"
+                    className="w-3 h-3 rounded-full flex-shrink-0"
                     style={{ backgroundColor: zone.color }}
                   />
                   <div className="min-w-0">
-                    <p className="text-sm font-medium text-white truncate">{zone.name}</p>
-                    <div className="flex items-center gap-2 mt-0.5">
+                    <p className="text-[12px] font-medium text-white truncate">{zone.name}</p>
+                    <div className="flex items-center gap-1.5 mt-0.5">
                       <span className={zone.risk_level === "high" ? "badge-high" : "badge-low"}>
-                        {zone.risk_level === "high" ? "High" : "Low"}
+                        {zone.risk_level}
                       </span>
-                      <span className="text-[9px] text-industrial-500 font-mono">
-                        {(zone.vertices?.length || 0)}v
+                      <span className="text-[9px] text-gray-600 font-mono">
+                        {zone.vertices?.length || 0}pts
                       </span>
                     </div>
                   </div>
@@ -118,26 +177,28 @@ export default function ZoneEditor({ zones, onRefresh, onStartDrawing, drawingMo
                 {/* Actions */}
                 <div className="flex items-center gap-1 flex-shrink-0">
                   <button
-                    onClick={() => toggleZone(zone)}
+                    onClick={(e) => { e.stopPropagation(); toggleZone(zone); }}
                     disabled={loading === zone.id}
-                    className="relative w-9 h-5 rounded-full transition-colors duration-200 focus:outline-none"
+                    className="relative w-8 h-[18px] rounded-full transition-colors duration-200"
                     style={{
-                      backgroundColor: zone.active ? "rgba(16, 185, 129, 0.35)" : "rgba(100, 116, 139, 0.2)",
+                      backgroundColor: zone.active ? "rgba(16, 185, 129, 0.3)" : "rgba(100, 116, 139, 0.2)",
                     }}
-                    title={zone.active ? "Disable" : "Enable"}
+                    role="switch"
+                    aria-checked={zone.active}
+                    aria-label={`${zone.active ? "Disable" : "Enable"} zone ${zone.name}`}
                   >
                     <div
-                      className={`absolute top-0.5 w-4 h-4 rounded-full transition-all duration-200 ${
-                        zone.active ? "bg-emerald-400" : "bg-industrial-500"
+                      className={`absolute top-[2px] w-[14px] h-[14px] rounded-full transition-all duration-200 ${
+                        zone.active ? "bg-emerald-400" : "bg-gray-500"
                       }`}
-                      style={{ left: zone.active ? "18px" : "2px" }}
+                      style={{ left: zone.active ? "16px" : "2px" }}
                     />
                   </button>
                   <button
-                    onClick={() => deleteZone(zone)}
+                    onClick={(e) => { e.stopPropagation(); deleteZone(zone); }}
                     disabled={loading === zone.id}
-                    className="p-1.5 rounded-lg hover:bg-red-500/15 text-industrial-500 hover:text-red-400 transition-colors"
-                    title="Delete"
+                    className="p-1 rounded-md hover:bg-red-500/10 text-gray-500 hover:text-red-400 transition-colors"
+                    aria-label={`Delete zone ${zone.name}`}
                   >
                     <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -149,6 +210,135 @@ export default function ZoneEditor({ zones, onRefresh, onStartDrawing, drawingMo
           ))
         )}
       </div>
+
+      {/* Zone Detail + Edit Overlay */}
+      <DetailPanel
+        isOpen={!!selectedZone}
+        onClose={() => setSelectedZone(null)}
+        title="Zone Detail"
+        width="420px"
+      >
+        {selectedZone && (
+          <div>
+            {/* Zone info summary */}
+            <div className="flex items-center gap-3 mb-5 p-3 rounded-lg" style={{ background: "var(--bg-input)" }}>
+              <div className="w-5 h-5 rounded-full flex-shrink-0" style={{ backgroundColor: editColor }} />
+              <div>
+                <p className="text-sm font-semibold" style={{ color: "var(--text-main)" }}>{selectedZone.name}</p>
+                <p className="text-[10px]" style={{ color: "var(--text-faint)" }}>
+                  {selectedZone.vertices?.length || 0} vertices • Created {selectedZone.created_at ? new Date(selectedZone.created_at).toLocaleDateString() : "N/A"}
+                </p>
+              </div>
+            </div>
+
+            {/* Editable fields */}
+            <div className="space-y-4">
+              {/* Name */}
+              <div>
+                <label className="text-[11px] font-medium mb-1.5 block" style={{ color: "var(--text-muted)" }}>Zone Name</label>
+                <input
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="input-field text-sm"
+                  placeholder="Zone name"
+                />
+              </div>
+
+              {/* Risk Level */}
+              <div>
+                <label className="text-[11px] font-medium mb-2 block" style={{ color: "var(--text-muted)" }}>Risk Level</label>
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setEditRisk("high")}
+                    className={`flex-1 py-2.5 rounded-lg text-xs font-medium border transition-all ${
+                      editRisk === "high" ? "border-red-500/40 bg-red-500/10 text-red-400" : ""
+                    }`}
+                    style={editRisk !== "high" ? { borderColor: "var(--border)", color: "var(--text-faint)" } : undefined}
+                  >
+                    High Risk
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditRisk("low")}
+                    className={`flex-1 py-2.5 rounded-lg text-xs font-medium border transition-all ${
+                      editRisk === "low" ? "border-amber-500/40 bg-amber-500/10 text-amber-400" : ""
+                    }`}
+                    style={editRisk !== "low" ? { borderColor: "var(--border)", color: "var(--text-faint)" } : undefined}
+                  >
+                    Low Risk
+                  </button>
+                </div>
+              </div>
+
+              {/* Color */}
+              <div>
+                <label className="text-[11px] font-medium mb-1.5 block" style={{ color: "var(--text-muted)" }}>Color</label>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="color"
+                    value={editColor}
+                    onChange={(e) => setEditColor(e.target.value)}
+                    className="w-10 h-10 rounded-lg cursor-pointer border-0 bg-transparent p-0"
+                    style={{ appearance: "none", WebkitAppearance: "none" }}
+                  />
+                  <span className="text-xs font-mono" style={{ color: "var(--text-muted)" }}>{editColor}</span>
+                </div>
+              </div>
+
+              {/* Active toggle */}
+              <div className="flex items-center justify-between p-3 rounded-lg" style={{ background: "var(--bg-input)" }}>
+                <span className="text-xs font-medium" style={{ color: "var(--text-main)" }}>Active Monitoring</span>
+                <button
+                  onClick={() => setEditActive(!editActive)}
+                  className="relative w-10 h-[22px] rounded-full transition-colors duration-200"
+                  style={{
+                    backgroundColor: editActive ? "rgba(16, 185, 129, 0.3)" : "rgba(100, 116, 139, 0.2)",
+                  }}
+                  role="switch"
+                  aria-checked={editActive}
+                >
+                  <div
+                    className={`absolute top-[3px] w-[16px] h-[16px] rounded-full transition-all duration-200 ${
+                      editActive ? "bg-emerald-400" : "bg-gray-500"
+                    }`}
+                    style={{ left: editActive ? "20px" : "3px" }}
+                  />
+                </button>
+              </div>
+            </div>
+
+            {/* Action buttons */}
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={deleteFromDetail}
+                className="py-2.5 px-4 rounded-lg text-sm font-medium transition-all border border-red-500/20 text-red-400 hover:bg-red-500/10"
+              >
+                Delete
+              </button>
+              <button
+                onClick={saveEdit}
+                disabled={saving || !editName.trim()}
+                className="flex-1 py-2.5 rounded-lg text-sm font-medium text-white transition-all disabled:opacity-30"
+                style={{ background: "var(--accent)" }}
+              >
+                {saving ? "Saving..." : "Save Changes"}
+              </button>
+            </div>
+          </div>
+        )}
+      </DetailPanel>
+
+      <Modal
+        isOpen={modalOpen}
+        onClose={() => setModalOpen(false)}
+        onConfirm={confirmDelete}
+        title="Delete Monitoring Zone"
+        message={`Are you sure you want to delete zone "${targetZone?.name}"? Monitoring for this area will stop immediately.`}
+        confirmText="Delete"
+        cancelText="Cancel"
+        type="danger"
+      />
     </div>
   );
 }

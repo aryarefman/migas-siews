@@ -20,6 +20,7 @@ class Violation:
     confidence: float
     person_name: str = "Unknown"
     uniform_code: str = None
+    ppe_detail: dict = None  # {helmet: bool, vest: bool, belt: bool}
 
 
 class ViolationChecker:
@@ -85,6 +86,7 @@ class ViolationChecker:
                     confidence=det.get("confidence", 0),
                     person_name=det.get("face_name", "Unknown"),
                     uniform_code=det.get("ocr_code"),
+                    ppe_detail={"helmet": has_helmet, "vest": has_vest, "belt": has_belt},
                 ))
 
         return violations
@@ -291,6 +293,42 @@ class ViolationChecker:
                 indices.add(i)
 
         return indices
+
+    def get_violated_zone_ids(self, persons: List[dict], zones: List[dict], violations: List[Violation]) -> Set[int]:
+        """
+        Return zone IDs currently occupied by persons with violations.
+        Uses polygon point-in-zone test for each person.
+        """
+        from polygon import point_in_polygon
+
+        violated = set()
+
+        for v in violations:
+            if v.violation_type == "zone_violation":
+                violated.add(v.zone_id)
+
+        # Also check: if a person is inside any zone, highlight that zone
+        for det in persons:
+            px = det.get("center_x")
+            py = det.get("center_y")
+            if px is None or py is None:
+                bbox = det.get("bbox", [])
+                if len(bbox) == 4:
+                    px = (bbox[0] + bbox[2]) / 2
+                    py = (bbox[1] + bbox[3]) / 2
+                else:
+                    continue
+
+            for z in zones:
+                zid = z.get("id")
+                vertices = z.get("vertices", [])
+                if zid is None or not vertices or len(vertices) < 3:
+                    continue
+
+                if point_in_polygon(px, py, vertices):
+                    violated.add(zid)
+
+        return violated
 
     def should_alert(self, zone_id: int, violation_type: str = "") -> bool:
         """

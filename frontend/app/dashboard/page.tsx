@@ -1,381 +1,256 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
-import LoadingScreen from "@/components/LoadingScreen";
-import VideoCanvas from "@/components/VideoCanvas";
-import ZoneEditor from "@/components/ZoneEditor";
+import { useEffect, useState, useCallback, useRef } from "react";
 import AlertFeed from "@/components/AlertFeed";
-import ShutdownBanner from "@/components/ShutdownBanner";
-import ImageTester from "@/components/ImageTester";
+import ZoneEditor from "@/components/ZoneEditor";
+import ToastContainer, { showToast } from "@/components/Toast";
+import Image from "next/image";
+import { useTheme } from "@/components/ThemeProvider";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
 
-interface ZoneData {
-  id: number;
-  name: string;
-  vertices: number[][];
-  color: string;
-  active: boolean;
-  risk_level: string;
-}
-
-interface AlertData {
-  alert_id: number;
-  zone_name: string;
-  zone_id: number;
-  risk_level: string;
-  timestamp: string;
-  confidence: number;
-  snapshot_url: string;
-  shutdown_triggered: boolean;
-  resolved?: boolean;
-  person_name?: string;
-  uniform_code?: string;
-}
-
-interface Stats {
-  active_zones: number;
-  today_alerts: number;
-  unresolved_alerts: number;
-  total_shutdowns: number;
-  camera_status: string;
-}
+interface ZoneData { id: number; name: string; vertices: number[][]; color: string; active: boolean; risk_level: string; }
 
 export default function DashboardPage() {
-  const [loading, setLoading] = useState(true);
+  const { theme, toggleTheme } = useTheme();
   const [zones, setZones] = useState<ZoneData[]>([]);
+  const [panelsVisible, setPanelsVisible] = useState(true);
+  const [leftOpen, setLeftOpen] = useState(true);
+  const [rightOpen, setRightOpen] = useState(true);
+  const [cameraOnline, setCameraOnline] = useState(false);
   const [drawingMode, setDrawingMode] = useState(false);
-  const [alertFlash, setAlertFlash] = useState(false);
-  const [shutdownAlert, setShutdownAlert] = useState<AlertData | null>(null);
-  const [stats, setStats] = useState<Stats>({
-    active_zones: 0,
-    today_alerts: 0,
-    unresolved_alerts: 0,
-    total_shutdowns: 0,
-    camera_status: "offline",
-  });
+  const [drawPoints, setDrawPoints] = useState<number[][]>([]);
+  const [stats, setStats] = useState({ active_zones: 0, today_alerts: 0, unresolved_alerts: 0 });
   const [showZoneDialog, setShowZoneDialog] = useState(false);
-  const [pendingVertices, setPendingVertices] = useState<number[][] | null>(null);
   const [newZoneName, setNewZoneName] = useState("");
   const [newZoneRisk, setNewZoneRisk] = useState("high");
-  const [newZoneColor, setNewZoneColor] = useState("#EF4444");
-  const [facilityName, setFacilityName] = useState("Offshore Platform A");
-  const [audioEnabled, setAudioEnabled] = useState(true);
-
-  // Audio elements
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [audioContext] = useState<AudioContext | null>(null);
-
-  const playAlertSound = useCallback((type: "entry" | "warning" | "critical" | "shutdown" | "face" | "ocr") => {
-    if (!audioEnabled) return;
-    
-    // Using pre-generated WAVs from backend
-    const soundUrls: Record<string, string> = {
-      entry: `${API_URL}/static/audio/zone_entry.wav`,
-      warning: `${API_URL}/static/audio/zone_warning.wav`,
-      critical: `${API_URL}/static/audio/zone_critical.wav`,
-      shutdown: `${API_URL}/static/audio/shutdown.wav`,
-      face: `${API_URL}/static/audio/face_recognized.wav`,
-      ocr: `${API_URL}/static/audio/ocr_detected.wav`,
-    };
-
-    const audio = new Audio(soundUrls[type]);
-    audio.play().catch(e => console.warn("Audio play failed:", e));
-  }, [audioEnabled]);
+  const streamRef = useRef<HTMLImageElement>(null);
+  const overlayRef = useRef<HTMLCanvasElement>(null);
 
   const fetchZones = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_URL}/polygons`);
-      if (res.ok) setZones(await res.json());
-    } catch { /* offline */ }
+    try { const r = await fetch(`${API_URL}/polygons`); if (r.ok) setZones(await r.json()); } catch {}
   }, []);
-
   const fetchStats = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_URL}/stats`);
-      if (res.ok) setStats(await res.json());
-    } catch { /* offline */ }
+    try { const r = await fetch(`${API_URL}/stats`); if (r.ok) setStats(await r.json()); } catch {}
   }, []);
-
-  const fetchSettings = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_URL}/settings`);
-      if (res.ok) {
-        const s = await res.json();
-        if (s.facility_name) setFacilityName(s.facility_name);
-      }
-    } catch { /* offline */ }
+  const checkCamera = useCallback(async () => {
+    try { const r = await fetch(`${API_URL}/camera/status`); if (r.ok) { const d = await r.json(); setCameraOnline(d.status === "online" || d.status === "on"); } } catch {}
   }, []);
 
   useEffect(() => {
-    const init = async () => {
-      await Promise.all([fetchZones(), fetchStats(), fetchSettings()]);
-      setTimeout(() => setLoading(false), 1200);
-    };
-    init();
-    const interval = setInterval(fetchStats, 15000);
-    return () => clearInterval(interval);
-  }, [fetchZones, fetchStats, fetchSettings]);
+    fetchZones(); fetchStats(); checkCamera();
+    const i1 = setInterval(fetchStats, 15000);
+    const i2 = setInterval(checkCamera, 5000);
+    const handleRefresh = () => fetchStats();
+    window.addEventListener("siews-stats-refresh", handleRefresh);
+    return () => { clearInterval(i1); clearInterval(i2); window.removeEventListener("siews-stats-refresh", handleRefresh); };
+  }, [fetchZones, fetchStats, checkCamera]);
 
-  const handleZoneCreated = (vertices: number[][]) => {
-    setPendingVertices(vertices);
-    setDrawingMode(false);
+  const toggleCamera = async () => {
+    try {
+      const ep = cameraOnline ? `${API_URL}/camera/disable` : `${API_URL}/camera/enable`;
+      const r = await fetch(ep, { method: "POST" });
+      if (r.ok) { const d = await r.json(); setCameraOnline(d.status === "on"); showToast(d.status === "on" ? "Camera enabled" : "Camera disabled", "success"); }
+    } catch { showToast("Failed to toggle camera", "error"); }
+  };
+
+  const toggleAll = () => { const n = !panelsVisible; setPanelsVisible(n); setLeftOpen(n); setRightOpen(n); };
+  const startDrawing = () => { setDrawingMode(true); setDrawPoints([]); setLeftOpen(false); setRightOpen(false); setPanelsVisible(false); };
+  const cancelDrawing = () => { setDrawingMode(false); setDrawPoints([]); setPanelsVisible(true); setLeftOpen(true); setRightOpen(true); };
+
+  const handleStreamClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!drawingMode) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    setDrawPoints((prev) => [...prev, [((e.clientX - rect.left) / rect.width) * 100, ((e.clientY - rect.top) / rect.height) * 100]]);
+  };
+
+  const handleStreamDoubleClick = () => {
+    if (!drawingMode || drawPoints.length < 3) return;
     setShowZoneDialog(true);
   };
 
-  const handleSaveZone = async () => {
-    if (!pendingVertices || !newZoneName.trim()) return;
+  const saveZone = async () => {
+    if (!newZoneName.trim()) return;
     try {
-      await fetch(`${API_URL}/polygons`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: newZoneName,
-          vertices: pendingVertices,
-          color: newZoneColor,
-          active: true,
-          risk_level: newZoneRisk,
-        }),
+      const nv = drawPoints.map(([x, y]) => [x / 100, y / 100]);
+      const r = await fetch(`${API_URL}/polygons`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newZoneName, vertices: nv, color: newZoneRisk === "high" ? "#ef4444" : "#fbbf24", active: true, risk_level: newZoneRisk }),
       });
-      setShowZoneDialog(false);
-      setNewZoneName("");
-      setNewZoneRisk("high");
-      setNewZoneColor("#EF4444");
-      setPendingVertices(null);
-      fetchZones();
-      fetchStats();
-    } catch (err) {
-      console.error("Failed to save zone", err);
-    }
+      if (r.ok) { showToast(`Zone "${newZoneName}" created`, "success"); fetchZones(); }
+    } catch { showToast("Failed to create zone", "error"); }
+    setShowZoneDialog(false); setNewZoneName(""); setNewZoneRisk("high"); cancelDrawing();
   };
 
-  const handleAlert = useCallback((alert: AlertData) => {
-    setAlertFlash(true);
-    setTimeout(() => setAlertFlash(false), 2000);
-    
-    if (alert.person_name && alert.person_name !== "Unknown") {
-      playAlertSound("face");
-    } else if (alert.uniform_code) {
-      playAlertSound("ocr");
-    }
+  useEffect(() => {
+    if (!overlayRef.current) return;
+    const canvas = overlayRef.current;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const parent = canvas.parentElement;
+    if (!parent) return;
+    canvas.width = parent.clientWidth; canvas.height = parent.clientHeight;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (drawPoints.length === 0) return;
+    ctx.strokeStyle = "#2a8fd4"; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    drawPoints.forEach(([x, y], i) => { const px = (x/100)*canvas.width; const py = (y/100)*canvas.height; if (i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py); });
+    if (drawPoints.length > 2) { ctx.closePath(); ctx.fillStyle = "rgba(42,143,212,0.1)"; ctx.fill(); }
+    ctx.stroke(); ctx.setLineDash([]);
+    drawPoints.forEach(([x, y]) => { const px = (x/100)*canvas.width; const py = (y/100)*canvas.height; ctx.beginPath(); ctx.arc(px,py,4,0,Math.PI*2); ctx.fillStyle="#2a8fd4"; ctx.fill(); ctx.strokeStyle="#fff"; ctx.lineWidth=1.5; ctx.stroke(); });
+  }, [drawPoints]);
 
-    if (alert.risk_level === "high") {
-      setTimeout(() => playAlertSound("critical"), 500);
-    } else {
-      setTimeout(() => playAlertSound("warning"), 500);
-    }
-    
-    fetchStats();
-  }, [fetchStats, playAlertSound]);
+  const handleAlert = useCallback(() => { fetchStats(); }, [fetchStats]);
+  const handleShutdown = useCallback(() => {}, []);
 
-  const handleShutdown = useCallback((alert: AlertData) => {
-    setShutdownAlert(alert);
-    playAlertSound("shutdown");
-  }, [playAlertSound]);
-
-  if (loading) return <LoadingScreen message="SYST_INIT: LOADING CORE ENGINE" />;
+  const navLinkStyle = { color: "var(--text-muted)" };
 
   return (
-    <div className="min-h-screen p-5 max-w-[1920px] mx-auto">
-      {/* ─── Command Bar ─── */}
-      <div className="mb-4 flex items-center gap-2 flex-wrap">
-        {/* Facility Label */}
-        <div className="flex items-center gap-2.5 px-4 py-2 rounded-lg bg-[#0c1220]/80 border border-[#162033]">
-          <svg className="w-3.5 h-3.5 text-amber-400" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm10 12h-2v-2h2v2zm0-4h-2v-2h2v2zm0-4h-2V9h2v2zm4 8h-2v-2h2v2zm0-4h-2v-2h2v2z"/>
-          </svg>
-          <span className="text-[11px] font-bold text-white uppercase tracking-wider">{facilityName}</span>
-        </div>
+    <div className="fixed inset-0 overflow-hidden" style={{ background: "var(--bg-base)" }}>
+      {/* Fullscreen Camera */}
+      <div
+        className="absolute inset-0 z-0 flex items-center justify-center"
+        style={{ background: cameraOnline ? "var(--bg-base)" : "var(--bg-base)", cursor: drawingMode ? "crosshair" : "default" }}
+        onClick={handleStreamClick}
+        onDoubleClick={handleStreamDoubleClick}
+      >
+        {cameraOnline ? (
+          <>
+            <img ref={streamRef} src={`${API_URL}/stream`} alt="Live" className="w-full h-full object-contain" onError={() => { setCameraOnline(false); setTimeout(() => { if (streamRef.current) streamRef.current.src = `${API_URL}/stream?t=${Date.now()}`; }, 5000); }} />
+            <canvas ref={overlayRef} className="absolute inset-0 w-full h-full pointer-events-none" />
+          </>
+        ) : (
+          <div className="flex flex-col items-center justify-center">
+            <Image src="/logo-siews.png" alt="SIEWS+" width={64} height={64} className="opacity-15 mb-6" />
+            <p className="text-sm font-medium mb-1" style={{ color: "var(--text-muted)" }}>Camera is turned off</p>
+            <p className="text-xs" style={{ color: "var(--text-faint)" }}>Click Cam On to enable the live feed</p>
+          </div>
+        )}
+      </div>
 
-        {/* Camera Status */}
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#0c1220]/80 border border-[#162033]">
-          <span className={`status-dot ${stats.camera_status === "online" ? "online" : "offline"}`} />
-          <span className="text-[10px] text-industrial-400 font-semibold uppercase tracking-wider">
-            CAM: <span className={stats.camera_status === "online" ? "text-emerald-400" : "text-red-400"}>{stats.camera_status}</span>
-          </span>
-        </div>
-
-        {/* Stats Chips */}
-        <div className="px-3 py-2 rounded-lg bg-[#0c1220]/80 border border-[#162033] flex items-center gap-2">
-          <span className="text-[10px] text-industrial-500 font-semibold uppercase tracking-wider">Zona:</span>
-          <span className="text-[11px] font-bold text-amber-400 font-mono">{stats.active_zones}</span>
-        </div>
-        <div className="px-3 py-2 rounded-lg bg-[#0c1220]/80 border border-[#162033] flex items-center gap-2">
-          <span className="text-[10px] text-industrial-500 font-semibold uppercase tracking-wider">Alert:</span>
-          <span className={`text-[11px] font-bold font-mono ${stats.today_alerts > 0 ? "text-red-400" : "text-industrial-500"}`}>{stats.today_alerts}</span>
-        </div>
-
-        {/* Right-side controls */}
-        <div className="ml-auto flex items-center gap-2">
-          <button
-            onClick={() => setAudioEnabled(!audioEnabled)}
-            className={`px-3 py-2 rounded-lg flex items-center gap-2 border transition-all duration-200 ${
-              audioEnabled
-                ? "bg-[#0c1220]/80 border-[#162033] text-amber-400 hover:border-warning-600/30"
-                : "bg-[#0c1220]/40 border-[#162033]/50 text-industrial-600"
-            }`}
-          >
-            <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
-              {audioEnabled ? (
-                <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+      {/* Navbar */}
+      {!drawingMode && (
+      <div className="fixed top-4 left-4 right-4 z-50 pointer-events-none">
+        <header className="pointer-events-auto flex items-center justify-between px-5 h-12 backdrop-blur-2xl border rounded-full shadow-lg max-w-[1400px] mx-auto" style={{ background: "var(--bg-glass)", borderColor: "var(--border)" }}>
+          <a href="/" className="flex items-center gap-2.5">
+            <Image src="/logo-siews.png" alt="SIEWS+" width={30} height={30} className="rounded-lg" />
+            <span className="text-sm font-semibold hidden sm:block" style={{ color: "var(--text-main)" }}>SIEWS+</span>
+          </a>
+          <nav className="flex items-center gap-0.5">
+            <a href="/dashboard" className="px-3.5 py-1.5 rounded-lg text-[12px] font-medium text-sky-400 bg-sky-500/10">Dashboard</a>
+            <a href="/faces" className="px-3.5 py-1.5 rounded-lg text-[12px] font-medium transition-all hover:bg-[var(--border)]" style={{ color: "var(--text-muted)" }}>Personnel</a>
+            <a href="/incidents" className="px-3.5 py-1.5 rounded-lg text-[12px] font-medium transition-all hover:bg-[var(--border)]" style={{ color: "var(--text-muted)" }}>
+              Incidents
+              {stats.unresolved_alerts > 0 && <span className="ml-1.5 inline-flex items-center justify-center min-w-[16px] h-[16px] rounded-full bg-red-500 text-white text-[9px] font-bold px-1">{stats.unresolved_alerts > 9 ? "9+" : stats.unresolved_alerts}</span>}
+            </a>
+            <a href="/zones" className="px-3.5 py-1.5 rounded-lg text-[12px] font-medium transition-all hover:bg-[var(--border)]" style={{ color: "var(--text-muted)" }}>Zones</a>
+            <a href="/settings" className="px-3.5 py-1.5 rounded-lg text-[12px] font-medium transition-all hover:bg-[var(--border)]" style={{ color: "var(--text-muted)" }}>Settings</a>
+            <div className="w-px h-5 mx-2" style={{ background: "var(--border)" }} />
+            <button onClick={toggleCamera} className={`px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all ${cameraOnline ? "text-emerald-400 bg-emerald-500/10" : "text-red-400 bg-red-500/10"}`}>{cameraOnline ? "Cam On" : "Cam Off"}</button>
+            <button onClick={toggleAll} className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all hover:bg-[var(--border)]" style={{ color: "var(--text-muted)" }}>{panelsVisible ? "Close All" : "Open All"}</button>
+          </nav>
+          <div className="flex items-center gap-2">
+            <button onClick={toggleTheme} className="p-2 rounded-lg transition-all hover:bg-[var(--border)]" style={{ color: "var(--text-muted)" }} title="Toggle theme">
+              {theme === "dark" ? (
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" /></svg>
               ) : (
-                <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" /></svg>
               )}
-            </svg>
-            <span className="text-[10px] font-semibold uppercase tracking-widest">{audioEnabled ? "Audio" : "Muted"}</span>
-          </button>
-
-          {stats.camera_status === "online" && (
-            <button
-              onClick={async () => {
-                await fetch(`${API_URL}/stream/reset`, { method: "POST" });
-                window.location.reload();
-              }}
-              className="px-3 py-2 rounded-lg flex items-center gap-2 border bg-[#0c1220]/80 border-[#162033] text-safe-500 hover:border-safe-500/30 transition-all duration-200"
-            >
-              <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
-              <span className="text-[10px] font-semibold uppercase tracking-widest">Reset</span>
             </button>
-          )}
+            <span className={`status-dot ${cameraOnline ? "online" : "offline"}`} />
+          </div>
+        </header>
+      </div>
+      )}
+
+      {/* Floating Panels */}
+      <div className="absolute inset-0 z-10 pointer-events-none">
+        <div className="h-full flex items-center justify-between px-5 max-w-[1920px] mx-auto">
+          {/* LEFT */}
+          <div className="pointer-events-auto ml-2">
+            {leftOpen && panelsVisible ? (
+              <div className="glass-card w-[240px] max-h-[60vh] overflow-y-auto animate-slide-in">
+                <div className="flex items-center justify-between px-3 py-2.5 border-b" style={{ borderColor: "var(--border)" }}>
+                  <span className="text-[11px] font-semibold" style={{ color: "var(--text-main)" }}>Zones</span>
+                  <button onClick={() => setLeftOpen(false)} style={{ color: "var(--text-faint)" }}>
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                  </button>
+                </div>
+                <ZoneEditor zones={zones} onRefresh={fetchZones} onStartDrawing={startDrawing} drawingMode={drawingMode} />
+              </div>
+            ) : (
+              <button onClick={() => { setLeftOpen(true); setPanelsVisible(true); }} className="glass-card p-2 opacity-60 hover:opacity-100 transition-opacity" title="Zones">
+                <svg className="w-4 h-4" style={{ color: "var(--accent-light)" }} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
+              </button>
+            )}
+          </div>
+          <div className="flex-1" />
+          {/* RIGHT */}
+          <div className="pointer-events-auto mr-2">
+            {rightOpen && panelsVisible ? (
+              <div className="glass-card w-[260px] max-h-[60vh] overflow-hidden flex flex-col animate-slide-in">
+                <div className="flex items-center justify-between px-3 py-2.5 border-b" style={{ borderColor: "var(--border)" }}>
+                  <span className="text-[11px] font-semibold" style={{ color: "var(--text-main)" }}>Alerts</span>
+                  <button onClick={() => setRightOpen(false)} style={{ color: "var(--text-faint)" }}>
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                  </button>
+                </div>
+                <AlertFeed onAlert={handleAlert} onShutdown={handleShutdown} />
+              </div>
+            ) : (
+              <button onClick={() => { setRightOpen(true); setPanelsVisible(true); }} className="glass-card p-2 opacity-60 hover:opacity-100 transition-opacity" title="Alerts">
+                <svg className="w-4 h-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" /></svg>
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Shutdown Banner */}
-      {shutdownAlert && (
-        <div className="mb-4">
-          <ShutdownBanner
-            alert={shutdownAlert}
-            onDismiss={() => {
-              setShutdownAlert(null);
-              fetchStats();
-            }}
-          />
+      {/* Live badge */}
+      {cameraOnline && (
+        <div className="fixed bottom-3 left-5 z-20 flex items-center gap-2 px-2.5 py-1 rounded-md backdrop-blur border" style={{ background: "var(--bg-glass)", borderColor: "var(--border)" }}>
+          <div className="relative"><div className="w-1.5 h-1.5 rounded-full bg-red-500" /><div className="absolute inset-0 w-1.5 h-1.5 rounded-full bg-red-500 animate-ping opacity-60" /></div>
+          <span className="text-[10px]" style={{ color: "var(--text-main)" }}>LIVE</span>
         </div>
       )}
 
-      {/* ─── Three Column Layout ─── */}
-      <div className="flex gap-4 h-[calc(100vh-150px)] flex-col lg:flex-row items-stretch overflow-hidden">
-        {/* Left Panel — Zone Control & Lab */}
-        <div className="w-full lg:w-[20%] min-w-[280px] flex flex-col h-full rounded-xl bg-[#0c1220]/80 border border-[#162033] overflow-y-auto panel-glow-amber">
-          <ZoneEditor
-            zones={zones}
-            onRefresh={fetchZones}
-            onStartDrawing={() => setDrawingMode(true)}
-            drawingMode={drawingMode}
-          />
-          <ImageTester />
+      {/* Drawing indicator */}
+      {drawingMode && (
+        <div className="fixed bottom-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 px-4 py-2 rounded-lg backdrop-blur border" style={{ background: "var(--bg-glass)", borderColor: "var(--accent)" }}>
+          <div className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" />
+          <span className="text-[11px]" style={{ color: "var(--text-main)" }}>Click to place points (min 3) — double-click or Enter to finish</span>
+          <button onClick={cancelDrawing} className="text-[11px] px-2 py-0.5 rounded" style={{ color: "var(--text-muted)", background: "var(--bg-input)" }}>Cancel</button>
         </div>
+      )}
 
-        {/* Center — Live Feed */}
-        <div className="flex-1 lg:w-[55%] flex flex-col h-full overflow-hidden relative rounded-xl border border-[#162033] bg-[#050810]">
-          <VideoCanvas
-            zones={zones}
-            drawingMode={drawingMode}
-            onZoneCreated={handleZoneCreated}
-            alertFlash={alertFlash}
-          />
-        </div>
-
-        {/* Right Panel — Alerts */}
-        <div className="w-full lg:w-[25%] min-w-[320px] flex flex-col h-full rounded-xl bg-[#0c1220]/80 border border-[#162033] overflow-hidden panel-glow-red">
-          <AlertFeed onAlert={handleAlert} onShutdown={handleShutdown} />
-        </div>
-      </div>
-
-      {/* ─── Zone Dialog ─── */}
+      {/* Zone creation dialog */}
       {showZoneDialog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-[#0c1220] border border-[#1c2a42] p-8 w-full max-w-sm animate-fade-in rounded-2xl shadow-2xl shadow-black/50">
-            <h3 className="text-sm font-bold text-white mb-6 uppercase tracking-[0.2em] flex items-center gap-3">
-              <div className="w-8 h-8 rounded-lg bg-warning-600/10 border border-warning-600/20 flex items-center justify-center">
-                <svg className="w-4 h-4 text-amber-400" fill="currentColor" viewBox="0 0 24 24"><path d="M3 5v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2H5c-1.11 0-2 .9-2 2zm12 4c0 1.66-1.34 3-3 3s-3-1.34-3-3 1.34-3 3-3 3 1.34 3 3zm-9 8c0-2 4-3.1 6-3.1s6 1.1 6 3.1v1H6v-1z"/></svg>
-              </div>
-              Zone Config
-            </h3>
-
-            <div className="space-y-5">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => { setShowZoneDialog(false); cancelDrawing(); }} />
+          <div className="relative z-10 p-6 w-[360px] rounded-2xl border shadow-2xl animate-fade-in" style={{ background: "var(--bg-surface)", borderColor: "var(--border)" }}>
+            <h3 className="text-base font-semibold mb-4" style={{ color: "var(--text-main)" }}>Create Zone</h3>
+            <div className="space-y-4">
               <div>
-                <label className="block text-[10px] font-semibold text-industrial-400 uppercase tracking-widest mb-2">Zone Name</label>
-                <input
-                  type="text"
-                  value={newZoneName}
-                  onChange={(e) => setNewZoneName(e.target.value)}
-                  placeholder="WELLHEAD-ALPHA"
-                  className="input-field font-mono text-xs"
-                  autoFocus
-                />
+                <label className="text-xs font-medium mb-1.5 block" style={{ color: "var(--text-muted)" }}>Zone Name</label>
+                <input value={newZoneName} onChange={(e) => setNewZoneName(e.target.value)} placeholder="e.g. Wellhead Area" className="input-field text-sm" autoFocus />
               </div>
-
               <div>
-                <label className="block text-[10px] font-semibold text-industrial-400 uppercase tracking-widest mb-2">Risk Level</label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={() => { setNewZoneRisk("high"); setNewZoneColor("#EF4444"); }}
-                    className={`py-3 rounded-lg text-[11px] font-bold tracking-wider uppercase transition-all border ${
-                      newZoneRisk === "high"
-                        ? "bg-danger-500/15 border-danger-500/40 text-danger-500 shadow-lg shadow-danger-500/10"
-                        : "bg-[#070d18] border-[#1c2a42] text-industrial-500 hover:border-[#243b5c]"
-                    }`}
-                  >
-                    High Risk
-                  </button>
-                  <button
-                    onClick={() => { setNewZoneRisk("low"); setNewZoneColor("#F59E0B"); }}
-                    className={`py-3 rounded-lg text-[11px] font-bold tracking-wider uppercase transition-all border ${
-                      newZoneRisk === "low"
-                        ? "bg-warning-600/15 border-warning-600/40 text-warning-500 shadow-lg shadow-warning-500/10"
-                        : "bg-[#070d18] border-[#1c2a42] text-industrial-500 hover:border-[#243b5c]"
-                    }`}
-                  >
-                    Low Risk
-                  </button>
+                <label className="text-xs font-medium mb-2 block" style={{ color: "var(--text-muted)" }}>Risk Level</label>
+                <div className="flex gap-3">
+                  <button type="button" onClick={() => setNewZoneRisk("high")} className={`flex-1 py-2.5 rounded-lg text-xs font-medium border transition-all ${newZoneRisk === "high" ? "border-red-500/40 bg-red-500/10 text-red-400" : ""}`} style={newZoneRisk !== "high" ? { borderColor: "var(--border)", color: "var(--text-faint)" } : undefined}>High Risk</button>
+                  <button type="button" onClick={() => setNewZoneRisk("low")} className={`flex-1 py-2.5 rounded-lg text-xs font-medium border transition-all ${newZoneRisk === "low" ? "border-amber-500/40 bg-amber-500/10 text-amber-400" : ""}`} style={newZoneRisk !== "low" ? { borderColor: "var(--border)", color: "var(--text-faint)" } : undefined}>Low Risk</button>
                 </div>
               </div>
-
-              <div>
-                <label className="block text-[10px] font-semibold text-industrial-400 uppercase tracking-widest mb-2">Zone Color</label>
-                <div className="flex items-center gap-3">
-                  <input
-                    type="color"
-                    value={newZoneColor}
-                    onChange={(e) => setNewZoneColor(e.target.value)}
-                    className="w-10 h-10 rounded-lg border border-[#1c2a42] cursor-pointer bg-transparent"
-                  />
-                  <div className="flex gap-1.5 flex-wrap">
-                    {["#EF4444", "#F59E0B", "#10B981", "#3B82F6", "#8B5CF6", "#EC4899", "#06B6D4", "#F97316"].map((c) => (
-                      <button
-                        key={c}
-                        onClick={() => setNewZoneColor(c)}
-                        className={`w-7 h-7 rounded-md border-2 transition-all ${newZoneColor === c ? "border-white scale-110" : "border-transparent hover:border-white/30"}`}
-                        style={{ backgroundColor: c }}
-                      />
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex gap-2 pt-2">
-                <button
-                  onClick={() => {
-                    setShowZoneDialog(false);
-                    setPendingVertices(null);
-                  }}
-                  className="btn-ghost flex-1 text-[11px] uppercase"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSaveZone}
-                  disabled={!newZoneName.trim()}
-                  className="btn-primary flex-1 text-[11px] uppercase disabled:opacity-20"
-                >
-                  Confirm Area
-                </button>
+              <div className="flex gap-3 pt-2">
+                <button onClick={() => { setShowZoneDialog(false); cancelDrawing(); }} className="flex-1 py-2.5 rounded-lg text-sm font-medium transition-all" style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-muted)" }}>Cancel</button>
+                <button onClick={saveZone} disabled={!newZoneName.trim()} className="flex-1 py-2.5 rounded-lg text-sm font-medium text-white transition-all disabled:opacity-30" style={{ background: "var(--accent)" }}>Create</button>
               </div>
             </div>
           </div>
         </div>
       )}
+
+      <ToastContainer />
     </div>
   );
 }

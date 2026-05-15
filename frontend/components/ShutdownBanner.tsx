@@ -17,8 +17,7 @@ export default function ShutdownBanner({ alert, onDismiss }: ShutdownBannerProps
 
   const formatTime = (ts: string) => {
     const date = new Date(ts);
-    const wib = new Date(date.getTime() + 7 * 60 * 60 * 1000);
-    return wib.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    return date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   };
 
   const handleConfirm = async () => {

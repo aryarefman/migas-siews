@@ -1,16 +1,12 @@
-import sqlite3
-import os
+from database import SessionLocal
+from models import Zone
+import json
 
-db_path = "siews.db"
-conn = sqlite3.connect(db_path)
-cursor = conn.cursor()
+db = SessionLocal()
 try:
-    cursor.execute("SELECT * FROM persons")
-    rows = cursor.fetchall()
-    print(f"Persons found: {len(rows)}")
-    for r in rows:
-        print(r)
-except Exception as e:
-    print(f"Error: {e}")
+    zones = db.query(Zone).all()
+    print(f"Total zones in DB: {len(zones)}")
+    for z in zones:
+        print(f"ID: {z.id}, Name: {z.name}, Active: {z.active}, Risk: {z.risk_level}")
 finally:
-    conn.close()
+    db.close()

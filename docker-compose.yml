@@ -1,5 +1,11 @@
 version: '3.8'
 
+# ============================================================
+# LINUX - Full Stack (backend + inference + frontend)
+# Kamera diakses langsung via /dev/video0
+# Usage: docker compose up --build
+# ============================================================
+
 services:
   backend:
     build:

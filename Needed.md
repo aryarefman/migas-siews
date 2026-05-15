@@ -157,3 +157,11 @@ def detect_by_superpixels(frame, n_segments=200):
     
     # Analyze segments yang merupakan "lubang" (warna gelap, bentuk irregular)
     ...
+
+---
+
+## Face recognition Pretrained Models (Search)
+
+1. https://github.com/lindevs/yolov8-face
+2. https://huggingface.co/arnabdhar/YOLOv8-Face-Detection
+3.

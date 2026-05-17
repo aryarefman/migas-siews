@@ -125,7 +125,7 @@ export default function DashboardPage() {
       >
         {cameraOnline ? (
           <>
-            <img ref={streamRef} src={`${API_URL}/stream`} alt="Live" className="w-full h-full object-contain" onError={() => { setCameraOnline(false); setTimeout(() => { if (streamRef.current) streamRef.current.src = `${API_URL}/stream?t=${Date.now()}`; }, 5000); }} />
+            <img ref={streamRef} src={`${API_URL}/stream`} alt="Live" className="w-full h-full object-contain" onError={() => { setTimeout(() => { if (streamRef.current) streamRef.current.src = `${API_URL}/stream?t=${Date.now()}`; }, 2000); }} />
             <canvas ref={overlayRef} className="absolute inset-0 w-full h-full pointer-events-none" />
           </>
         ) : (
@@ -156,7 +156,7 @@ export default function DashboardPage() {
             <a href="/settings" className="px-3.5 py-1.5 rounded-lg text-[12px] font-medium transition-all hover:bg-[var(--border)]" style={{ color: "var(--text-muted)" }}>Settings</a>
             <div className="w-px h-5 mx-2" style={{ background: "var(--border)" }} />
             <button onClick={toggleCamera} className={`px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all ${cameraOnline ? "text-emerald-400 bg-emerald-500/10" : "text-red-400 bg-red-500/10"}`}>{cameraOnline ? "Cam On" : "Cam Off"}</button>
-            <button onClick={() => setShowVideoPlayer(true)} className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all text-purple-400 bg-purple-500/10 hover:bg-purple-500/20">Video</button>
+            <button onClick={async () => { setShowVideoPlayer(true); try { const r = await fetch(`${API_URL}/video/jobs`); if (r.ok) setVideoJobs(await r.json()); } catch {} }} className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all text-purple-400 bg-purple-500/10 hover:bg-purple-500/20">Video</button>
             <button onClick={toggleAll} className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all hover:bg-[var(--border)]" style={{ color: "var(--text-muted)" }}>{panelsVisible ? "Close All" : "Open All"}</button>
           </nav>
           <div className="flex items-center gap-2">
@@ -277,7 +277,13 @@ export default function DashboardPage() {
                   <button key={job.id} onClick={async () => {
                     try {
                       const r = await fetch(`${API_URL}/stream/simulate-video?job_id=${job.id}`, { method: "POST" });
-                      if (r.ok) { setCameraOnline(true); setShowVideoPlayer(false); showToast({ message: `Playing "${job.filename}" as live feed`, type: "success" }); }
+                      if (r.ok) {
+                        setCameraOnline(true);
+                        setShowVideoPlayer(false);
+                        // Force reload stream after small delay to let backend start serving video
+                        setTimeout(() => { if (streamRef.current) streamRef.current.src = `${API_URL}/stream?t=${Date.now()}`; }, 500);
+                        showToast({ message: `Playing "${job.filename}" as live feed`, type: "success" });
+                      }
                       else showToast({ message: "Failed to start simulation", type: "error" });
                     } catch { showToast({ message: "Error", type: "error" }); }
                   }}

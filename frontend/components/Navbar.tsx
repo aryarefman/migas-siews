@@ -38,9 +38,9 @@ export default function Navbar() {
   return (
     <div className="fixed top-4 left-4 right-4 z-50 pointer-events-none">
       <header className="pointer-events-auto flex items-center justify-between px-5 h-12 bg-[var(--bg-glass)] backdrop-blur-2xl border border-[var(--border)] rounded-full shadow-lg max-w-[1400px] mx-auto">
-        <Link href="/" className="flex items-center gap-2.5">
-          <Image src="/logo-siews.png" alt="SIEWS+" width={30} height={30} className="rounded-lg" />
-          <span className="text-sm font-semibold text-[var(--text-main)] hidden sm:block">SIEWS+</span>
+        <Link href="/" className="flex items-center gap-2">
+          <Image src="/logo-siews.png" alt="SIEWS+" width={22} height={22} className="rounded-md" />
+          <span className="text-xs font-semibold text-[var(--text-main)] hidden sm:block">SIEWS+</span>
         </Link>
         <nav className="flex items-center gap-1">
           {navLinks.map((link) => (

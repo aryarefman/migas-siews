@@ -1050,6 +1050,185 @@ async def reprocess_video(job_id: int, background_tasks: BackgroundTasks, db: Se
     }
 
 
+@app.post("/video/jobs/{job_id}/check-frame")
+async def check_video_frame(job_id: int, timestamp: float = Query(0), db: Session = Depends(get_db)):
+    """
+    Check violations for a specific frame timestamp in a processed video.
+    Called by frontend during video playback to generate real-time alerts.
+    Uses the stored result_json to check against current active zones.
+    """
+    job = db.query(VideoJob).filter(VideoJob.id == job_id).first()
+    if not job or job.status != "done" or not job.result_json:
+        return {"violations": []}
+
+    # Find the closest frame to the requested timestamp
+    frames = json.loads(job.result_json)
+    if not frames:
+        return {"violations": []}
+
+    # Find frame closest to timestamp
+    closest = min(frames, key=lambda f: abs(f["timestamp_sec"] - timestamp))
+
+    # Get active zones
+    active_zones = db.query(Zone).filter(Zone.active == True).all()
+    zones_data = [
+        {"id": z.id, "name": z.name, "vertices": json.loads(z.vertices_json), "risk_level": z.risk_level}
+        for z in active_zones
+    ]
+
+    if not zones_data and not closest.get("persons"):
+        return {"violations": []}
+
+    # Check violations using the stored detection data
+    from violation_checker import ViolationChecker, Violation
+    from polygon import point_in_polygon
+
+    violations_found = []
+
+    # Check persons against zones
+    persons = closest.get("persons", [])
+    for i, person in enumerate(persons):
+        bbox = person.get("bbox", [0, 0, 0, 0])
+        x1, y1, x2, y2 = bbox
+        # Assume frame dimensions from video (use job metadata or default)
+        frame_w = 1280
+        frame_h = 720
+
+        cx = ((x1 + x2) / 2) / frame_w
+        cy = ((y1 + y2) / 2) / frame_h
+
+        for zone in zones_data:
+            verts = zone.get("vertices", [])
+            if len(verts) < 3:
+                continue
+            if point_in_polygon([cx, cy], verts):
+                violations_found.append({
+                    "type": "zone_violation",
+                    "zone_id": zone["id"],
+                    "zone_name": zone["name"],
+                    "risk_level": zone["risk_level"],
+                    "confidence": person.get("confidence", 0),
+                    "person_index": i,
+                })
+                break
+
+        # PPE violations
+        ppe_violations = person.get("ppe_violations", [])
+        if ppe_violations:
+            violations_found.append({
+                "type": "ppe_violation",
+                "zone_id": hash(f"ppe_{i}") % 10000,
+                "zone_name": f"PPE Violation ({', '.join(ppe_violations)})",
+                "risk_level": "high",
+                "confidence": person.get("confidence", 0),
+                "person_index": i,
+            })
+
+    # Check env hazards (fire/smoke)
+    for hazard in closest.get("env", []):
+        category = hazard.get("category", "")
+        class_name = hazard.get("class_name", "")
+        if category == "fire_smoke" or class_name.lower() in ("fire", "smoke"):
+            violations_found.append({
+                "type": "fire_smoke",
+                "zone_id": 998 if class_name.lower() == "fire" else 997,
+                "zone_name": f"{class_name.title()} Detected",
+                "risk_level": "high",
+                "confidence": hazard.get("confidence", 0),
+            })
+
+    return {
+        "frame": closest.get("frame", 0),
+        "timestamp_sec": closest.get("timestamp_sec", 0),
+        "violations": violations_found,
+    }
+
+
+class VideoAlertRequest(BaseModel):
+    job_id: int
+    zone_id: int
+    zone_name: str
+    risk_level: str = "high"
+    confidence: float = 0.0
+    violation_type: str = "zone_violation"
+    timestamp_sec: float = 0.0
+    person_name: str = "Unknown"
+    uniform_code: Optional[str] = None
+
+
+# Cooldown tracker for video playback alerts (prevent spam)
+_video_alert_cooldowns: dict = {}
+
+
+@app.post("/video/alert")
+async def create_video_alert(req: VideoAlertRequest, db: Session = Depends(get_db)):
+    """Create an alert from video playback detection. Same logic as live stream alerts."""
+    import time as time_mod
+
+    # Cooldown: 10 seconds per zone_id
+    now = time_mod.time()
+    last = _video_alert_cooldowns.get(req.zone_id, 0)
+    if now - last < 10:
+        return {"status": "cooldown", "message": "Alert already sent recently"}
+    _video_alert_cooldowns[req.zone_id] = now
+
+    now_utc = datetime.now(timezone.utc)
+
+    # Create alert in database
+    alert = Alert(
+        zone_id=req.zone_id,
+        confidence=req.confidence,
+        snapshot_path=None,
+        timestamp=now_utc,
+        shutdown_triggered=False,
+        resolved=False,
+        violation_type=req.violation_type,
+        person_name=req.person_name,
+        uniform_code=req.uniform_code,
+    )
+    db.add(alert)
+    db.commit()
+    db.refresh(alert)
+
+    # Broadcast via WebSocket
+    ws_event = {
+        "type": "alert",
+        "alert_id": alert.id,
+        "zone_name": req.zone_name,
+        "zone_id": req.zone_id,
+        "risk_level": req.risk_level,
+        "timestamp": now_utc.isoformat(),
+        "confidence": req.confidence,
+        "snapshot_url": None,
+        "shutdown_triggered": False,
+        "person_name": req.person_name,
+        "uniform_code": req.uniform_code,
+        "violation_type": req.violation_type,
+        "source": "video_playback",
+    }
+    await stream_manager._broadcast_to_ws(ws_event)
+
+    # Send WhatsApp notification
+    settings = {s.key: s.value for s in db.query(Setting).all()}
+    fonnte_token = settings.get("fonnte_token", "")
+    recipients = settings.get("recipients", "")
+    facility_name = settings.get("facility_name", "Offshore Platform A")
+
+    if fonnte_token and recipients:
+        from notifier import send_to_all_recipients
+        try:
+            await send_to_all_recipients(
+                recipients, req.zone_name, req.risk_level, req.confidence,
+                False, facility_name, "",
+                snapshot_url=None,
+                person_name=req.person_name, uniform_code=req.uniform_code
+            )
+        except Exception as e:
+            print(f"[VIDEO-ALERT] Notification error: {e}")
+
+    return {"status": "alerted", "alert_id": alert.id}
+
+
 # ─── Image Analysis ───────────────────────────────────────────
 @app.post("/analyze/image")
 async def analyze_image(file: UploadFile = File(...)):

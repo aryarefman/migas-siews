@@ -286,6 +286,50 @@ export default function DashboardPage() {
   const handleAlert = useCallback(() => { fetchStats(); }, [fetchStats]);
   const handleShutdown = useCallback(() => {}, []);
 
+  // Real-time video playback detection — check frame against zones periodically
+  useEffect(() => {
+    if (!videoMode || !videoJobId || drawingMode) return;
+    const video = videoRef.current;
+    if (!video) return;
+
+    let lastCheckedTime = -1;
+    const checkInterval = setInterval(async () => {
+      if (!video || video.paused || video.ended) return;
+      const currentTime = Math.round(video.currentTime * 2) / 2; // Round to 0.5s
+      if (currentTime === lastCheckedTime) return;
+      lastCheckedTime = currentTime;
+
+      try {
+        const r = await fetch(`${API_URL}/video/jobs/${videoJobId}/check-frame?timestamp=${currentTime}`);
+        if (!r.ok) return;
+        const data = await r.json();
+        if (data.violations && data.violations.length > 0) {
+          // Create alert for each violation via backend
+          for (const v of data.violations) {
+            const alertRes = await fetch(`${API_URL}/video/alert`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                job_id: videoJobId,
+                zone_id: v.zone_id,
+                zone_name: v.zone_name,
+                risk_level: v.risk_level,
+                confidence: v.confidence,
+                violation_type: v.type,
+                timestamp_sec: data.timestamp_sec,
+              }),
+            });
+            if (alertRes.ok) {
+              // Alert will come via WebSocket
+            }
+          }
+        }
+      } catch {}
+    }, 1000); // Check every 1 second
+
+    return () => clearInterval(checkInterval);
+  }, [videoMode, videoJobId, drawingMode]);
+
   // Determine what's active: camera, video, browser cam, or nothing
   const hasActiveSource = cameraOnline || videoMode || browserCamActive;
 
@@ -333,9 +377,9 @@ export default function DashboardPage() {
       {!drawingMode && (
       <div className="fixed top-4 left-4 right-4 z-50 pointer-events-none">
         <header className="pointer-events-auto flex items-center justify-between px-5 h-12 backdrop-blur-2xl border rounded-full shadow-lg max-w-[1400px] mx-auto" style={{ background: "var(--bg-glass)", borderColor: "var(--border)" }}>
-          <a href="/" className="flex items-center gap-2.5">
-            <Image src="/logo-siews.png" alt="SIEWS+" width={30} height={30} className="rounded-lg" />
-            <span className="text-sm font-semibold hidden sm:block" style={{ color: "var(--text-main)" }}>SIEWS+</span>
+          <a href="/" className="flex items-center gap-2">
+            <Image src="/logo-siews.png" alt="SIEWS+" width={22} height={22} className="rounded-md" />
+            <span className="text-xs font-semibold hidden sm:block" style={{ color: "var(--text-main)" }}>SIEWS+</span>
           </a>
           <nav className="flex items-center gap-0.5">
             <a href="/dashboard" className="px-3.5 py-1.5 rounded-lg text-[12px] font-medium text-sky-400 bg-sky-500/10">Dashboard</a>

@@ -325,13 +325,6 @@ class VideoProcessor:
                 frame_results.append(frame_data)
                 processed += 1
 
-                # ── Generate alerts for violations ──────────────────────
-                if frame_data["has_violation"]:
-                    await self._generate_alerts(
-                        db, frame, result, zones_data, width, height,
-                        timestamp_sec, job_id
-                    )
-
                 # Update progress in DB every 50 processed frames
                 if processed % 50 == 0:
                     progress = min(99, int((frame_idx / max(total_frames, 1)) * 100))

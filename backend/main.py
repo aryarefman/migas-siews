@@ -808,7 +808,6 @@ def get_compliance_analytics(db: Session = Depends(get_db)):
 # ─── Video Upload & Processing ────────────────────────────────
 @app.post("/video/upload")
 async def upload_video(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
@@ -834,7 +833,10 @@ async def upload_video(
     db.commit()
     db.refresh(job)
 
-    background_tasks.add_task(video_processor.process_video, job.id)
+    # Run in separate thread so it doesn't block the event loop
+    import threading
+    thread = threading.Thread(target=_run_video_processing, args=(job.id,), daemon=True)
+    thread.start()
 
     return {
         "job_id": job.id,
@@ -842,6 +844,17 @@ async def upload_video(
         "status": "pending",
         "message": "Video uploaded. Processing started in background.",
     }
+
+
+def _run_video_processing(job_id: int):
+    """Wrapper to run async video processing in a new event loop (separate thread)."""
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(video_processor.process_video(job_id))
+    finally:
+        loop.close()
 
 
 @app.get("/video/jobs")

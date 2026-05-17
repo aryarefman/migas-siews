@@ -299,50 +299,18 @@ export default function SettingsPage() {
               {/* Job List */}
               {videoJobs.length > 0 && (
                 <div className="surface-card p-6">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider">Processing Jobs</h3>
-                    {videoJobs.length > 0 && (
-                      <button
-                        onClick={async () => {
-                          if (!confirm("Delete all video jobs and files?")) return;
-                          for (const job of videoJobs) {
-                            try { await fetch(`${API_URL}/video/jobs/${job.id}`, { method: "DELETE" }); } catch {}
-                          }
-                          fetchVideoJobs();
-                          showToastMsg("All video jobs deleted");
-                        }}
-                        className="btn-danger text-[10px] py-1 px-2"
-                      >
-                        Delete All
-                      </button>
-                    )}
-                  </div>
+                  <h3 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-4">Processing Jobs</h3>
                   <div className="space-y-3">
                     {videoJobs.map(job => (
                       <div key={job.id} className="p-4 rounded-lg bg-[var(--bg-input)] border border-[var(--border)]">
                         <div className="flex items-center justify-between mb-2">
                           <span className="text-sm font-medium text-[var(--text-main)] truncate max-w-[200px]">{job.filename}</span>
-                          <div className="flex items-center gap-2">
-                            <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded ${
-                              job.status === "done" ? "bg-emerald-500/15 text-emerald-400" :
-                              job.status === "failed" ? "bg-red-500/15 text-red-400" :
-                              job.status === "processing" ? "bg-amber-500/15 text-amber-400" :
-                              "bg-gray-500/15 text-gray-400"
-                            }`}>{job.status}</span>
-                            <button
-                              onClick={async () => {
-                                try {
-                                  await fetch(`${API_URL}/video/jobs/${job.id}`, { method: "DELETE" });
-                                  fetchVideoJobs();
-                                  showToastMsg("Video job deleted");
-                                } catch { showToastMsg("Delete failed", "error"); }
-                              }}
-                              className="p-1 rounded hover:bg-red-500/10 text-[var(--text-faint)] hover:text-red-400 transition-all"
-                              title="Delete job"
-                            >
-                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                            </button>
-                          </div>
+                          <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded ${
+                            job.status === "done" ? "bg-emerald-500/15 text-emerald-400" :
+                            job.status === "failed" ? "bg-red-500/15 text-red-400" :
+                            job.status === "processing" ? "bg-amber-500/15 text-amber-400" :
+                            "bg-gray-500/15 text-gray-400"
+                          }`}>{job.status}</span>
                         </div>
                         {(job.status === "processing" || job.status === "pending") && (
                           <div className="w-full h-1.5 bg-[var(--border)] rounded-full overflow-hidden">
@@ -350,30 +318,10 @@ export default function SettingsPage() {
                           </div>
                         )}
                         {job.status === "done" && (
-                          <div className="flex items-center gap-3 mt-2">
-                            <a href={`${API_URL}/video/annotated/${job.id}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-xs text-[var(--accent-light)] hover:underline">
-                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-                              Download
-                            </a>
-                            <button
-                              onClick={async () => {
-                                try {
-                                  const res = await fetch(`${API_URL}/video/jobs/${job.id}/reprocess`, { method: "POST" });
-                                  if (res.ok) {
-                                    showToastMsg("Re-processing started with current zones");
-                                    fetchVideoJobs();
-                                  } else {
-                                    const err = await res.json();
-                                    showToastMsg(err.detail || "Re-process failed", "error");
-                                  }
-                                } catch { showToastMsg("Re-process failed", "error"); }
-                              }}
-                              className="inline-flex items-center gap-1.5 text-xs text-amber-400 hover:text-amber-300 transition-colors"
-                            >
-                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
-                              Re-process
-                            </button>
-                          </div>
+                          <a href={`${API_URL}/video/annotated/${job.id}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 mt-2 text-xs text-[var(--accent-light)] hover:underline">
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                            Download Annotated Video
+                          </a>
                         )}
                         <p className="text-[10px] text-[var(--text-faint)] mt-1">{new Date(job.created_at).toLocaleString()}</p>
                       </div>

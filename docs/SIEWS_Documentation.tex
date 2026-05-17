@@ -1,0 +1,1637 @@
+\documentclass[12pt,a4paper,oneside]{book}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{setspace}
+\usepackage{indentfirst}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage[table,xcdraw]{xcolor}
+\usepackage{longtable}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{makeidx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{geometry}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{xurl}
+\usepackage{enumitem}
+
+% Page margins
+\geometry{
+    left=2.5cm,
+    right=2.5cm,
+    top=3cm,
+    bottom=3cm,
+    bindingoffset=0cm
+}
+
+% Hyperlink styling
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+    pdftitle={SIEWS+ 5.0 Technical Documentation},
+    pdfpagemode=FullScreen,
+}
+
+% Code listing styling
+\lstdefinestyle{codestyle}{
+    backgroundcolor=\color{gray!10},
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    numbers=left,
+    numbersep=5pt,
+    tabsize=2,
+}
+
+\lstdefinestyle{pythonstyle}{
+    language=Python,
+    backgroundcolor=\color{gray!10},
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    numbers=left,
+    numbersep=5pt,
+}
+
+\lstdefinestyle{jsonstyle}{
+    language=JSON,
+    backgroundcolor=\color{gray!10},
+    basicstyle=\ttfamily\tiny,
+    breaklines=true,
+    frame=single,
+    numbers=left,
+    numbersep=5pt,
+}
+
+% Section formatting
+\titleformat{\chapter}[display]
+    {\normalfont\LARGE\bfseries}{\thechapter}{1em}{}
+\titlespacing*{\chapter}{0pt}{20pt}{40pt}
+
+% Header/Footer
+\fancyhf{}
+\fancyhead[LE,RO]{\thepage}
+\fancyhead[RE]{\leftmark}
+\fancyhead[LO]{\rightmark}
+\pagestyle{fancy}
+
+% Index
+\makeindex
+
+\begin{document}
+
+% Title Page
+\begin{titlepage}
+    \centering
+    \vspace*{3cm}
+
+    {\Huge\bfseries SIEWS+ 5.0\par}
+    \vspace{0.5cm}
+    {\LARGE\bfseries Smart Integrated Early Warning System Plus\par}
+    \vspace{1.5cm}
+
+    {\LARGE Technical Documentation\par}
+    \vspace{2cm}
+
+    {\large Version 5.0\par}
+    \vspace{1cm}
+
+    {\large\textit{\textcopyright{} 2024-2026}\par}
+    \vspace{2cm}
+
+    \begin{minipage}{\linewidth}
+        \centering
+        AI-Powered Safety Monitoring System for Upstream Oil \& Gas Facilities
+    \end{minipage}
+
+    \vfill
+
+\end{titlepage}
+
+% Table of Contents
+\pagenumbering{roman}
+\tableofcontents
+\newpage
+
+\pagenumbering{arabic}
+\onehalfspacing
+
+% ============================================================================
+% CHAPTER 1: PROJECT OVERVIEW
+% ============================================================================
+\chapter{Project Overview}
+
+\section{Introduction}
+
+\textbf{SIEWS+ 5.0 (Smart Integrated Early Warning System Plus)} is an advanced AI-powered safety monitoring system specifically designed for upstream oil and gas facilities, including offshore platforms, onshore processing areas, and industrial sites with high safety requirements.
+
+The system provides real-time monitoring capabilities including:
+\begin{itemize}
+    \item Human presence detection using computer vision
+    \item Zone-based restriction management via polygon overlays
+    \item Personal Protective Equipment (PPE) violation detection
+    \item Automated shutdown signal triggering for high-risk zone breaches
+    \item Real-time WhatsApp notifications to supervisors
+    \item Web-based monitoring dashboard
+\end{itemize}
+
+\section{Project Scope}
+
+SIEWS+ 5.0 addresses critical safety monitoring requirements in hazardous industrial environments:
+
+\begin{enumerate}
+    \item \textbf{Real-time Person Detection}: Continuous monitoring of personnel presence using YOLOv8 deep learning models
+    \item \textbf{PPE Compliance Monitoring}: Automated detection of safety equipment (helmets, vests, belts) usage
+    \item \textbf{Zone Access Control}: Polygon-based restricted area management with dwell-time tracking
+    \item \textbf{Environmental Hazard Detection}: Identification of road damage, open holes, and safety cones
+    \item \textbf{Incident Documentation}: Automated snapshot capture and incident logging for compliance reporting
+\end{enumerate}
+
+\section{Technology Stack}
+
+\begin{table}[H]
+    \centering
+    \caption{Technology Stack Overview}
+    \begin{tabular}{|l|l|l|}
+        \hline
+        \textbf{Layer} & \textbf{Technology} & \textbf{Purpose} \\
+        \hline
+        Frontend & Next.js 14 (App Router) & Web Dashboard UI \\
+        \hline
+        Styling & Tailwind CSS 3.4 & Responsive Design \\
+        \hline
+        Backend & Python FastAPI & REST API, Streaming \\
+        \hline
+        Detection & YOLOv8n (Ultralytics) & Multi-stage Object Detection \\
+        \hline
+        Streaming & OpenCV + MJPEG & Video Frame Processing \\
+        \hline
+        Database & SQLite + SQLAlchemy & Persistent Storage \\
+        \hline
+        Realtime & FastAPI WebSocket & Live Alert Push \\
+        \hline
+        Notification & Fonnte API & WhatsApp Alerts \\
+        \hline
+        Face Rec. & dlib face\_recognition & Biometric Personnel ID \\
+        \hline
+        OCR & EasyOCR & Uniform Code Reading \\
+        \hline
+    \end{tabular}
+\end{table}
+
+\section{System Architecture Overview}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{placeholder_arch}
+    \caption{System Architecture Flow}
+    \label{fig:system_architecture}
+\end{figure}
+
+The core data flow follows this sequence:
+\begin{verbatim}
+IP Camera → Backend (YOLOv8) → Zone Check (polygon) →
+Alert + Shutdown → WhatsApp → Dashboard
+\end{verbatim}
+
+\section{Project Directory Structure}
+
+\begin{verbatim}
+migas-siews/
+├── backend/
+│   ├── main.py              # FastAPI entry point, all API endpoints
+│   ├── stream.py            # StreamManager (detection pipeline)
+│   ├── detector.py          # MultiStagePipeline (4-stage YOLO)
+│   ├── polygon.py           # Ray-casting point-in-polygon
+│   ├── zone_tracker.py     # PersonZoneTracker (dwell-time engine)
+│   ├── violation_checker.py # ViolationChecker (PPE, zone, hazard)
+│   ├── notifier.py          # WhatsApp via Fonnte API
+│   ├── shutdown.py          # Shutdown signal handler
+│   ├── models.py            # SQLAlchemy ORM models
+│   ├── database.py          # SQLite engine, init_db()
+│   ├── config.py            # Environment variables loader
+│   ├── drawing.py           # OpenCV drawing utilities
+│   ├── face_manager.py      # Face registration & recognition
+│   ├── ocr_engine.py        # EasyOCR uniform code reader
+│   ├── video_processor.py   # Async video upload processing
+│   ├── detection_models.py # Class enums and thresholds
+│   ├── requirements.txt    # Python dependencies
+│   ├── .env                 # Environment configuration
+│   └── static/
+│       ├── snapshots/        # Violation screenshots
+│       ├── faces/           # Registered face images
+│       └── uploads/         # Uploaded video files
+├── frontend/
+│   ├── app/
+│   │   ├── layout.tsx       # Root layout + Navbar
+│   │   ├── page.tsx        # Redirects to /dashboard
+│   │   ├── dashboard/      # Main monitoring page
+│   │   ├── incidents/      # Incident log + filters
+│   │   ├── zones/          # Zone management
+│   │   ├── settings/      # System configuration
+│   │   ├── analyze/       # Photo analysis page
+│   │   ├── video-analysis/ # Video upload + processing
+│   │   └── faces/         # Personnel biometric registry
+│   ├── components/
+│   │   ├── Navbar.tsx      # Top navigation bar
+│   │   ├── VideoCanvas.tsx # MJPEG stream + polygon overlay
+│   │   ├── ZoneEditor.tsx  # Zone list panel
+│   │   ├── AlertFeed.tsx   # Live WebSocket alert sidebar
+│   │   ├── AlertCard.tsx   # Individual alert card
+│   │   ├── ShutdownBanner.tsx # Emergency shutdown banner
+│   │   ├── ImageTester.tsx # Image upload component
+│   │   └── LoadingScreen.tsx
+│   ├── package.json
+│   └── tailwind.config.ts
+├── training/
+│   ├── train_stage3_fire_smoke_v2.ipynb
+│   ├── train_stage3_fire_smoke.py
+│   └── requirements_train.txt
+├── dataset/                 # Dataset storage
+├── backend-go/              # Go-based backend (alternative)
+├── camera-gateway/          # Camera gateway service
+└── README.md
+\end{verbatim}
+
+% ============================================================================
+% CHAPTER 2: BACKEND COMPONENTS
+% ============================================================================
+\chapter{Backend Components}
+
+\section{Main Application (main.py)}
+
+The \texttt{main.py} file serves as the FastAPI application entry point, handling all REST API endpoints, WebSocket connections, and CORS configuration.
+
+\subsection{API Endpoints}
+
+\begin{longtable}{|l|l|p{8cm}|}
+    \hline
+    \textbf{Method} & \textbf{Endpoint} & \textbf{Description} \\
+    \hline
+    GET & \texttt{/stream} & MJPEG video stream with YOLO overlay \\
+    \hline
+    GET & \texttt{/polygons} & List all zones \\
+    \hline
+    POST & \texttt{/polygons} & Create a new zone \\
+    \hline
+    PUT & \texttt{/polygons/\{id\}} & Update zone \\
+    \hline
+    DELETE & \texttt{/polygons/\{id\}} & Delete zone + cascade records \\
+    \hline
+    GET & \texttt{/alerts} & Paginated incident log with filters \\
+    \hline
+    POST & \texttt{/alerts/\{id\}/resolve} & Mark incident resolved \\
+    \hline
+    POST & \texttt{/alerts/\{id\}/false-positive} & Mark as false positive \\
+    \hline
+    GET & \texttt{/alerts/\{id\}/detections} & Per-object detection crops \\
+    \hline
+    POST & \texttt{/shutdown/trigger} & Manual shutdown signal \\
+    \hline
+    GET & \texttt{/settings} & Get all settings \\
+    \hline
+    POST & \texttt{/settings} & Update a setting \\
+    \hline
+    POST & \texttt{/settings/notify-test} & Send test WhatsApp \\
+    \hline
+    WS & \texttt{/ws/alerts} & Real-time alert push WebSocket \\
+    \hline
+    WS & \texttt{/ws/camera} & Browser camera → AI → annotated frame \\
+    \hline
+    GET & \texttt{/stats} & Dashboard statistics \\
+    \hline
+    GET & \texttt{/analytics/compliance} & PPE compliance statistics \\
+    \hline
+    POST & \texttt{/ai/analyze-image} & Analyze uploaded image \\
+    \hline
+    POST & \texttt{/analyze/image} & Upload image for multi-stage detection \\
+    \hline
+    POST & \texttt{/stream/simulate} & Inject static image into live stream \\
+    \hline
+    POST & \texttt{/stream/reset} & Reset to live camera \\
+    \hline
+    POST & \texttt{/video/upload} & Upload video for async processing \\
+    \hline
+    GET & \texttt{/video/jobs} & List video processing jobs \\
+    \hline
+    GET & \texttt{/video/jobs/\{id\}} & Get job status \\
+    \hline
+    GET & \texttt{/video/jobs/\{id\}/result} & Get full detection results \\
+    \hline
+    GET & \texttt{/video/annotated/\{id\}} & Serve annotated video \\
+    \hline
+    DELETE & \texttt{/video/jobs/\{id\}} & Delete a job \\
+    \hline
+    GET & \texttt{/faces} & List registered faces \\
+    \hline
+    POST & \texttt{/faces/register} & Register a new face \\
+    \hline
+    DELETE & \texttt{/faces/\{id\}} & Delete a face \\
+    \hline
+    POST & \texttt{/faces/train} & Re-load face database \\
+    \hline
+    POST & \texttt{/ai/generate-report} & LLM incident report generation \\
+    \hline
+    POST & \texttt{/ai/schedule} & Agentic scheduling (mock) \\
+    \hline
+    GET & \texttt{/health} & Health check \\
+    \hline
+\end{longtable}
+
+\section{Database Models (models.py)}
+
+The backend uses SQLAlchemy ORM for database management with SQLite as the database engine.
+
+\subsection{Zone Model}
+
+Represents restricted zone polygons on the monitoring area.
+
+\begin{lstlisting}[style=pythonstyle]
+class Zone(Base):
+    __tablename__ = "zones"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)
+    vertices_json = Column(Text, nullable=False)  # JSON: [[x,y], ...]
+    color = Column(String(7), default="#FF0000")
+    active = Column(Boolean, default=True)
+    risk_level = Column(String(10), default="high")  # "high" | "low"
+    zone_type = Column(String(20), default="restricted")
+    dwell_threshold_sec = Column(Integer, default=10)
+    created_at = Column(DateTime, default=datetime.utcnow)
+\end{lstlisting}
+
+\subsection{Alert Model}
+
+Incident log entry for detected violations.
+
+\begin{lstlisting}[style=pythonstyle]
+class Alert(Base):
+    __tablename__ = "alerts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    zone_id = Column(Integer, ForeignKey("zones.id"), nullable=True)
+    confidence = Column(Float, default=0.0)
+    snapshot_path = Column(String(255), nullable=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    shutdown_triggered = Column(Boolean, default=False)
+    resolved = Column(Boolean, default=False)
+    violation_type = Column(String(50), nullable=True)
+    false_positive = Column(Boolean, default=False)
+    ppe_detail = Column(Text, nullable=True)  # JSON
+    person_name = Column(String(100), nullable=True)
+    uniform_code = Column(String(50), nullable=True)
+\end{lstlisting}
+
+\subsection{DetectionLog Model}
+
+Per-object crop for false positive review and audit.
+
+\begin{lstlisting}[style=pythonstyle]
+class DetectionLog(Base):
+    __tablename__ = "detection_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    alert_id = Column(Integer, ForeignKey("alerts.id"), nullable=True)
+    class_name = Column(String(50), nullable=False)
+    confidence = Column(Float, default=0.0)
+    crop_path = Column(String(255), nullable=True)
+    frame_number = Column(Integer, nullable=True)
+    bbox_json = Column(Text, nullable=True)  # JSON: {x1,y1,x2,y2}
+    is_false_positive = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+\end{lstlisting}
+
+\subsection{Other Models}
+
+\begin{itemize}
+    \item \textbf{ShutdownLog}: Records shutdown events with trigger source (auto/manual)
+    \item \textbf{Setting}: Key-value configuration store for system parameters
+    \item \textbf{VideoJob}: Async video processing job tracking
+    \item \textbf{ZoneOccupancy}: Zone dwell audit log for compliance reporting
+\end{itemize}
+
+\section{Core Detection Pipeline}
+
+\subsection{StreamManager (stream.py)}
+
+The StreamManager orchestrates the entire detection pipeline:
+
+\begin{enumerate}
+    \item Captures frames from IP camera at configured interval
+    \item Runs multi-stage YOLO detection pipeline
+    \item Checks for PPE violations using ViolationChecker
+    \item Checks for zone violations using polygon algorithms
+    \item Triggers alerts and shutdown signals when violations detected
+    \item Generates MJPEG stream with overlay annotations
+    \item Broadcasts alerts via WebSocket to connected dashboards
+\end{enumerate}
+
+\subsection{MultiStagePipeline (detector.py)}
+
+Implements a 4-stage detection pipeline:
+
+\begin{longtable}{|l|l|l|l|}
+    \hline
+    \textbf{Stage} & \textbf{Model} & \textbf{Classes} & \textbf{Purpose} \\
+    \hline
+    1 & yolov8n.pt & person & Base person detection \\
+    \hline
+    2 & best\_stage2\_labeled\_safety.pt & unknown, belt, helmet, vest & PPE compliance \\
+    \hline
+    3 & best\_stage3\_openhole.pt & barricade, hard\_hat, safety\_cone, open\_hole, vest\_env & Environmental hazards \\
+    \hline
+    4 & best\_jalan\_berlubang.pt & lubang, retak, tambalan & Road damage detection \\
+    \hline
+\end{longtable}
+
+\section{Polygon Algorithms (polygon.py)}
+
+\subsection{Ray-Casting Point-in-Polygon}
+
+The system uses the ray-casting algorithm to determine if a point is inside a polygon:
+
+\begin{lstlisting}[style=pythonstyle]
+def point_in_polygon(point: Tuple[float, float], polygon: List[List[float]]) -> bool:
+    """Ray-casting algorithm to determine if a point is inside a polygon.
+    All coordinates are normalized (0.0 - 1.0)."""
+    x, y = point
+    n = len(polygon)
+    inside = False
+
+    j = n - 1
+    for i in range(n):
+        xi, yi = polygon[i]
+        xj, yj = polygon[j]
+
+        if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+            inside = not inside
+        j = i
+
+    return inside
+\end{lstlisting}
+
+All polygon coordinates are normalized (0.0 to 1.0) for resolution independence.
+
+\section{Violation Checking (violation\_checker.py)}
+
+The ViolationChecker validates detected objects against safety rules:
+
+\subsection{PPE Violations}
+\begin{itemize}
+    \item NO\_HELMET: Person detected without helmet
+    \item NO\_VEST: Person detected without safety vest
+    \item NO\_BELT: Person detected without safety belt
+\end{itemize}
+
+\subsection{Zone Violations}
+\begin{itemize}
+    \item Checks person (head, chest, feet points) inside restricted zones
+    \item Triggers shutdown for high-risk zones
+    \item Logs warning for low-risk zones
+\end{itemize}
+
+\subsection{Hazard Violations}
+\begin{itemize}
+    \item Person center overlapping environmental hazard (open hole, road damage)
+    \item Generates critical alert with snapshot
+\end{itemize}
+
+\section{Person Tracking (zone\_tracker.py)}
+
+The PersonZoneTracker maintains stable person identities across frames:
+
+\begin{itemize}
+    \item Uses centroid proximity matching for track association
+    \item Generates unique 8-character hex UUIDs for track IDs
+    \item Tracks dwell time in zones with configurable thresholds
+    \item Emits events: zone\_entry, dwell\_warning, dwell\_critical, zone\_exit
+\end{itemize}
+
+\section{Notification System (notifier.py)}
+
+WhatsApp notifications via Fonnte API:
+
+\begin{lstlisting}[style=pythonstyle]
+def send_whatsapp(message: str, recipient: str) -> dict:
+    """Send single WhatsApp message via Fonnte API."""
+    url = "https://fonnte.com/api/send_message.php"
+    data = {
+        "token": FONNTE_TOKEN,
+        "target": recipient,
+        "message": message,
+    }
+    response = requests.post(url, data=data)
+    return response.json()
+\end{lstlisting}
+
+\section{Face Recognition (face\_manager.py)}
+
+\begin{itemize}
+    \item Uses dlib face\_recognition (128-dim HOG encoding)
+    \item OpenCV Haar cascade fallback when dlib unavailable
+    \item Registers faces with name, code, and phone number
+    \item Stores encodings in face\_db.json for persistence
+    \item Singleton instance: face\_manager
+\end{itemize}
+
+\section{OCR Engine (ocr\_engine.py)}
+
+\begin{itemize}
+    \item Uses EasyOCR for uniform code reading from person chest area
+    \item Applies CLAHE, denoising, and sharpening preprocessing
+    \item Fuzzy-matches against registered codes from face database
+    \item Graceful fallback when EasyOCR unavailable
+\end{itemize}
+
+% ============================================================================
+% CHAPTER 3: FRONTEND COMPONENTS
+% ============================================================================
+\chapter{Frontend Components}
+
+\section{Next.js Application Structure}
+
+The frontend is built with Next.js 14 App Router with Tailwind CSS for styling.
+
+\subsection{Page Routes}
+
+\begin{longtable}{|l|l|p{8cm}|}
+    \hline
+    \textbf{Page} & \textbf{Path} & \textbf{Purpose} \\
+    \hline
+    Root & \texttt{/} & Redirects to \texttt{/dashboard} \\
+    \hline
+    Dashboard & \texttt{/dashboard} & Main monitoring - live stream, zone editor, alerts \\
+    \hline
+    Zones & \texttt{/zones} & Zone management without canvas drawing \\
+    \hline
+    Incidents & \texttt{/incidents} & Historical alert log with CSV export \\
+    \hline
+    Settings & \texttt{/settings} & Camera, inference, WhatsApp configuration \\
+    \hline
+    Analyze Photo & \texttt{/analyze} & Single image upload + detection analysis \\
+    \hline
+    Video Analysis & \texttt{/video-analysis} & Video upload, job list, per-frame results \\
+    \hline
+    Faces & \texttt{/faces} & Personnel biometric registry \\
+    \hline
+\end{longtable}
+
+\section{Key Components}
+
+\subsection{VideoCanvas.tsx}
+
+The primary monitoring component that displays the MJPEG stream with polygon overlay capabilities:
+
+\textbf{Features:}
+\begin{itemize}
+    \item MJPEG stream display from \texttt{/stream} endpoint
+    \item Canvas overlay for zone polygon drawing
+    \item Click-to-place vertices, double-click to close polygon
+    \item Alert flash animation (red border + overlay text)
+    \item Camera offline overlay with reconnection logic
+    \item LIVE indicator with ping animation
+\end{itemize}
+
+\textbf{VideoCanvas Interface:}
+\begin{lstlisting}[style=pythonstyle]
+interface ZoneData {
+  id: number;
+  name: string;
+  vertices: number[][];  // Normalized [x, y] coordinates
+  color: string;
+  active: boolean;
+  risk_level: string;
+}
+\end{lstlisting}
+
+\subsection{ZoneEditor.tsx}
+
+Zone management panel with the following features:
+\begin{itemize}
+    \item Lists all zones with active/inactive toggle
+    \item "Tambah Zona" button to start drawing mode
+    \item Delete zone button
+    \item Risk level badge display
+    \item Vertex count display
+\end{itemize}
+
+\subsection{AlertFeed.tsx}
+
+Real-time alert sidebar component:
+\begin{itemize}
+    \item WebSocket connection to \texttt{/ws/alerts}
+    \item Real-time alert list (max 30, newest first)
+    \item Audio beep on new alerts (oscillator-based, different tone for high/low risk)
+    \item Resolve and False Positive actions
+    \item Connection status indicator
+\end{itemize}
+
+\subsection{Navbar.tsx}
+
+Fixed navigation bar with:
+\begin{itemize}
+    \item Logo and navigation links
+    \item Active link highlighting (amber color)
+    \item Real-time stats chips: camera status, zone count, today's alerts
+    \item Unresolved alert badge on "Incidents" link
+\end{itemize}
+
+\subsection{ShutdownBanner.tsx}
+
+Emergency shutdown alert display:
+\begin{itemize}
+    \item Full-width emergency shutdown banner
+    \item Displays zone name and timestamp (WIB timezone)
+    \item "Confirm \& Reset" button to resolve alert
+\end{itemize}
+
+\section{State Management}
+
+The frontend uses React's built-in state management with hooks:
+\begin{itemize}
+    \item \texttt{useState} for local component state
+    \item \texttt{useEffect} for side effects (WebSocket, polling)
+    \item \texttt{useCallback} for memoized callbacks
+    \item API calls to FastAPI backend via \texttt{NEXT\_PUBLIC\_API\_URL}
+\end{itemize}
+
+\section{Styling}
+
+All styling is done with Tailwind CSS utility classes. Custom theme colors:
+\begin{itemize}
+    \item Primary: Amber (\texttt{amber-500})
+    \item Danger: Red (\texttt{red-600})
+    \item Success: Green (\texttt{green-500})
+    \item Info: Blue (\texttt{blue-500})
+\end{itemize}
+
+% ============================================================================
+% CHAPTER 4: DATABASE SCHEMA
+% ============================================================================
+\chapter{Database Schema}
+
+\section{Entity Relationship Diagram}
+
+The database consists of 7 primary tables with the following relationships:
+
+\begin{itemize}
+    \item \texttt{alerts} references \texttt{zones} (zone\_id)
+    \item \texttt{detection\_logs} references \texttt{alerts} (alert\_id)
+    \item \texttt{shutdown\_logs} references \texttt{zones} (zone\_id)
+    \item \texttt{video\_jobs} is standalone
+    \item \texttt{zone\_occupancy} references \texttt{zones} (zone\_id)
+    \item \texttt{settings} is a key-value store
+\end{itemize}
+
+\section{Table Definitions}
+
+\subsection{zones}
+
+\begin{tabular}{|l|l|l|p{6cm}|}
+    \hline
+    \textbf{Column} & \textbf{Type} & \textbf{Default} & \textbf{Description} \\
+    \hline
+    id & INTEGER & PK & Primary key \\
+    \hline
+    name & VARCHAR(100) & NOT NULL & Zone display name \\
+    \hline
+    vertices\_json & TEXT & NOT NULL & JSON list of normalized [x,y] pairs \\
+    \hline
+    color & VARCHAR(7) & \#FF0000 & Hex color code \\
+    \hline
+    active & BOOLEAN & TRUE & Zone enabled/disabled \\
+    \hline
+    risk\_level & VARCHAR(10) & high & "high" or "low" \\
+    \hline
+    zone\_type & VARCHAR(20) & restricted & Zone classification \\
+    \hline
+    dwell\_threshold\_sec & INTEGER & 10 & Dwell time before alert \\
+    \hline
+    created\_at & DATETIME & now() & Creation timestamp \\
+    \hline
+\end{tabular}
+
+\subsection{alerts}
+
+\begin{tabular}{|l|l|l|p{6cm}|}
+    \hline
+    \textbf{Column} & \textbf{Type} & \textbf{Default} & \textbf{Description} \\
+    \hline
+    id & INTEGER & PK & Primary key \\
+    \hline
+    zone\_id & INTEGER & FK & Reference to zones.id \\
+    \hline
+    confidence & FLOAT & 0.0 & Detection confidence \\
+    \hline
+    snapshot\_path & VARCHAR(255) & NULL & Path to violation screenshot \\
+    \hline
+    timestamp & DATETIME & now() & Alert timestamp \\
+    \hline
+    shutdown\_triggered & BOOLEAN & FALSE & Shutdown signal sent \\
+    \hline
+    resolved & BOOLEAN & FALSE & Alert resolved status \\
+    \hline
+    violation\_type & VARCHAR(50) & NULL & Type of violation detected \\
+    \hline
+    false\_positive & BOOLEAN & FALSE & Marked as false positive \\
+    \hline
+    ppe\_detail & TEXT & NULL & JSON with PPE details \\
+    \hline
+    person\_name & VARCHAR(100) & NULL & Recognized person name \\
+    \hline
+    uniform\_code & VARCHAR(50) & NULL & OCR-detected uniform code \\
+    \hline
+\end{tabular}
+
+\subsection{detection\_logs}
+
+\begin{tabular}{|l|l|l|p{6cm}|}
+    \hline
+    \textbf{Column} & \textbf{Type} & \textbf{Default} & \textbf{Description} \\
+    \hline
+    id & INTEGER & PK & Primary key \\
+    \hline
+    alert\_id & INTEGER & FK & Reference to alerts.id \\
+    \hline
+    class\_name & VARCHAR(50) & NOT NULL & Detected class name \\
+    \hline
+    confidence & FLOAT & 0.0 & Detection confidence \\
+    \hline
+    crop\_path & VARCHAR(255) & NULL & Path to cropped image \\
+    \hline
+    frame\_number & INTEGER & NULL & Source video frame number \\
+    \hline
+    bbox\_json & TEXT & NULL & JSON bounding box coords \\
+    \hline
+    is\_false\_positive & BOOLEAN & FALSE & Marked as false positive \\
+    \hline
+    created\_at & DATETIME & now() & Creation timestamp \\
+    \hline
+\end{tabular}
+
+\subsection{shutdown\_logs}
+
+\begin{tabular}{|l|l|l|p{6cm}|}
+    \hline
+    \textbf{Column} & \textbf{Type} & \textbf{Default} & \textbf{Description} \\
+    \hline
+    id & INTEGER & PK & Primary key \\
+    \hline
+    zone\_id & INTEGER & FK & Reference to zones.id \\
+    \hline
+    trigger\_source & VARCHAR(20) & NOT NULL & "auto" or "manual" \\
+    \hline
+    triggered\_at & DATETIME & now() & Shutdown timestamp \\
+    \hline
+\end{tabular}
+
+\subsection{settings}
+
+\begin{tabular}{|l|l|l|p{6cm}|}
+    \hline
+    \textbf{Column} & \textbf{Type} & \textbf{Default} & \textbf{Description} \\
+    \hline
+    id & INTEGER & PK & Primary key \\
+    \hline
+    key & VARCHAR(100) & UNIQUE & Setting key name \\
+    \hline
+    value & TEXT & NULL & Setting value \\
+    \hline
+\end{tabular}
+
+\subsection{video\_jobs}
+
+\begin{tabular}{|l|l|l|p{6cm}|}
+    \hline
+    \textbf{Column} & \textbf{Type} & \textbf{Default} & \textbf{Description} \\
+    \hline
+    id & INTEGER & PK & Primary key \\
+    \hline
+    filename & VARCHAR(255) & NOT NULL & Original filename \\
+    \hline
+    file\_path & VARCHAR(255) & NOT NULL & Stored file path \\
+    \hline
+    status & VARCHAR(20) & pending & pending/processing/done/failed \\
+    \hline
+    progress & INTEGER & 0 & Progress percentage 0-100 \\
+    \hline
+    total\_frames & INTEGER & 0 & Total frames in video \\
+    \hline
+    processed\_frames & INTEGER & 0 & Frames processed so far \\
+    \hline
+    result\_json & TEXT & NULL & Full detection results JSON \\
+    \hline
+    annotated\_video\_path & VARCHAR(255) & NULL & Path to output video \\
+    \hline
+    error\_message & TEXT & NULL & Error description if failed \\
+    \hline
+    created\_at & DATETIME & now() & Job creation time \\
+    \hline
+    completed\_at & DATETIME & NULL & Job completion time \\
+    \hline
+\end{tabular}
+
+\subsection{zone\_occupancy}
+
+\begin{tabular}{|l|l|l|p{6cm}|}
+    \hline
+    \textbf{Column} & \textbf{Type} & \textbf{Default} & \textbf{Description} \\
+    \hline
+    id & INTEGER & PK & Primary key \\
+    \hline
+    zone\_id & INTEGER & FK & Reference to zones.id \\
+    \hline
+    track\_id & VARCHAR(20) & NOT NULL & 8-char hex UUID for person \\
+    \hline
+    entry\_time & DATETIME & NOT NULL & Zone entry timestamp \\
+    \hline
+    exit\_time & DATETIME & NULL & Zone exit timestamp \\
+    \hline
+    dwell\_sec & INTEGER & NULL & Total dwell duration \\
+    \hline
+    alert\_level & VARCHAR(20) & none & none/warning/critical \\
+    \hline
+\end{tabular}
+
+% ============================================================================
+% CHAPTER 5: DETECTION MODELS
+% ============================================================================
+\chapter{Detection Models and Classes}
+
+\section{Detection Class Definitions (detection\_models.py)}
+
+\subsection{PPE Classes (Stage 2)}
+
+\begin{tabular}{|l|l|l|}
+    \hline
+    \textbf{Index} & \textbf{Name} & \textbf{Description} \\
+    \hline
+    0 & UNKNOWN & Unknown object class \\
+    \hline
+    1 & BELT & Safety belt/buckle \\
+    \hline
+    2 & HELMET & Safety helmet/hard hat \\
+    \hline
+    3 & VEST & Safety vest \\
+    \hline
+\end{tabular}
+
+\subsection{Environment Classes (Stage 3)}
+
+\begin{tabular}{|l|l|l|}
+    \hline
+    \textbf{Index} & \textbf{Name} & \textbf{Description} \\
+    \hline
+    0 & BARRICADE & Safety barricade \\
+    \hline
+    1 & HARD\_HAT & Worker wearing hard hat \\
+    \hline
+    2 & SAFETY\_CONE & Safety cone marker \\
+    \hline
+    3 & OPEN\_HOLE & Open hole/excavation \\
+    \hline
+    4 & VEST\_ENV & Worker wearing safety vest (env) \\
+    \hline
+\end{tabular}
+
+\subsection{Road Damage Classes (Stage 4)}
+
+\begin{tabular}{|l|l|l|}
+    \hline
+    \textbf{Index} & \textbf{Name} & \textbf{Description} \\
+    \hline
+    0 & LUBANG & Pothole \\
+    \hline
+    1 & RETAK & Crack \\
+    \hline
+    2 & TAMBALAN & Patch/filled area \\
+    \hline
+\end{tabular}
+
+\section{Confidence Thresholds}
+
+\begin{tabular}{|l|l|l|}
+    \hline
+    \textbf{Detection Type} & \textbf{Threshold} & \textbf{Description} \\
+    \hline
+    PERSON\_CONFIDENCE\_THRESHOLD & 0.50 & Minimum person detection confidence \\
+    \hline
+    PPE\_CONFIDENCE\_THRESHOLD & 0.35 & Minimum PPE detection confidence \\
+    \hline
+    ENV\_CONFIDENCE\_THRESHOLD & 0.40 & Minimum environment hazard confidence \\
+    \hline
+    ROAD\_CONFIDENCE\_THRESHOLD & 0.40 & Minimum road damage confidence \\
+    \hline
+    SAFETY\_CONE\_CONFIDENCE & 0.50 & Minimum safety cone confidence \\
+    \hline
+    PPE\_IOU\_THRESHOLD & 0.10 & IoU threshold for PPE-person assignment \\
+    \hline
+\end{tabular}
+
+\section{Model Files}
+
+\begin{longtable}{|l|l|l|l|}
+    \hline
+    \textbf{Model File} & \textbf{Stage} & \textbf{Classes} & \textbf{Use Case} \\
+    \hline
+    best\_stage2\_labeled\_safety.pt & 2 (PPE) & unknown, belt, helmet, vest & PPE compliance \\
+    \hline
+    best\_stage3\_openhole.pt & 3 (Env) & barricade, hard\_hat, safety\_cone, open\_hole, vest\_env & Environmental hazards \\
+    \hline
+    best\_jalan\_berlubang.pt & 4 (Road) & lubang, retak, tambalan & Road damage detection \\
+    \hline
+    stage2\_ppe\_harness.pt & 2 (PPE) & harness-specific & PPE variant \\
+    \hline
+    stage3\_environment.pt & 3 (Env) & environment-specific & Environment variant \\
+    \hline
+    stage4\_infrastructure.pt & 4 (Infra) & infrastructure-specific & Infrastructure variant \\
+    \hline
+\end{longtable}
+
+\section{Training Configuration}
+
+Training uses YOLOv8n as the base model with the following hyperparameters:
+
+\begin{longtable}{|l|l|l|p{6cm}|}
+    \hline
+    \textbf{Parameter} & \textbf{Value} & \textbf{Type} & \textbf{Description} \\
+    \hline
+    epochs & 80 & int & Training epochs \\
+    \hline
+    batch & 8-16 & int & Batch size (auto-adjusted for GPU VRAM) \\
+    \hline
+    imgsz & 640 & int & Input image size \\
+    \hline
+    patience & 15 & int & Early stopping patience \\
+    \hline
+    freeze & 10 & int & Frozen layers (transfer learning) \\
+    \hline
+    optimizer & AdamW & string & Optimizer type \\
+    \hline
+    lr0 & 0.001 & float & Initial learning rate \\
+    \hline
+    lrf & 0.01 & float & Final learning rate (cosine decay) \\
+    \hline
+    hsv\_h & 0.03 & float & Hue augmentation \\
+    \hline
+    hsv\_s & 0.9 & float & Saturation augmentation \\
+    \hline
+    hsv\_v & 0.5 & float & Value/brightness augmentation \\
+    \hline
+    mosaic & 1.0 & float & 4-image mosaic augmentation \\
+    \hline
+    mixup & 0.1 & float & Mixup augmentation probability \\
+    \hline
+    flipud & 0.1 & float & Vertical flip probability \\
+    \hline
+    degrees & 5.0 & float & Rotation augmentation \\
+    \hline
+    scale & 0.6 & float & Scale augmentation \\
+    \hline
+    erasing & 0.3 & float & Random erasing probability \\
+    \hline
+\end{longtable}
+
+% ============================================================================
+% CHAPTER 6: CONFIGURATION
+% ============================================================================
+\chapter{Configuration}
+
+\section{Backend Environment (.env)}
+
+\begin{lstlisting}[style=jsonstyle]
+CAMERA_SOURCE=0
+FACILITY_NAME=Offshore Platform A
+CONFIDENCE_THRESHOLD=0.3
+DETECTION_INTERVAL=3
+NOTIFY_COOLDOWN=300
+FONNTE_TOKEN=
+DEFAULT_RECIPIENTS=
+\end{lstlisting}
+
+\section{Backend Requirements (requirements.txt)}
+
+\begin{lstlisting}[style=pythonstyle]
+fastapi==0.115.0
+uvicorn==0.30.0
+opencv-python==4.10.0.84
+ultralytics==8.4.37
+sqlalchemy==2.0.35
+aiofiles==24.1.0
+python-dotenv==1.0.1
+httpx==0.27.2
+python-multipart==0.0.9
+websockets==12.0
+face-recognition==1.3.0
+easyocr==1.7.0
+dlib==19.24.0
+numpy>=1.24.0
+pillow>=10.0.0
+\end{lstlisting}
+
+\section{Frontend Configuration (package.json)}
+
+\begin{lstlisting}[style=jsonstyle]
+{
+  "name": "siews-frontend",
+  "version": "5.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "14.2.35",
+    "react": "^18",
+    "react-dom": "^18"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5"
+  }
+}
+\end{lstlisting}
+
+\section{Tailwind Configuration (tailwind.config.ts)}
+
+\begin{lstlisting}[style=pythonstyle]
+import type { Config } from "tailwindcss";
+
+const config: Config = {
+  content: [
+    "./pages/**/*.{js,ts,jsx,tsx,mdx}",
+    "./components/**/*.{js,ts,jsx,tsx,mdx}",
+    "./app/**/*.{js,ts,jsx,tsx,mdx}",
+  ],
+  theme: {
+    extend: {
+      colors: {
+        primary: {
+          50: "#fffbeb",
+          100: "#fef3c7",
+          200: "#fde68a",
+          300: "#fcd34d",
+          400: "#fbbf24",
+          500: "#f59e0b",
+          600: "#d97706",
+          700: "#b45309",
+          800: "#92400e",
+          900: "#78350f",
+        },
+      },
+    },
+  },
+  plugins: [],
+};
+export default config;
+\end{lstlisting}
+
+% ============================================================================
+% CHAPTER 7: INSTALLATION AND SETUP
+% ============================================================================
+\chapter{Installation and Setup}
+
+\section{System Requirements}
+
+\begin{itemize}
+    \item Python 3.10+
+    \item Node.js 18+
+    \item 8GB+ RAM (16GB recommended for training)
+    \item NVIDIA GPU with 6GB+ VRAM (for detection)
+    \item Internet connection for API services
+\end{itemize}
+
+\section{Backend Setup}
+
+\subsection{Clone and Install}
+
+\begin{verbatim}
+# Clone repository
+git clone https://github.com/username/migas-siews.git
+cd migas-siews/backend
+
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+venv\Scripts\activate     # Windows
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Configure environment
+cp .env.example .env
+# Edit .env with your configuration
+\end{verbatim}
+
+\subsection{Run Backend}
+
+\begin{verbatim}
+# Development
+uvicorn main:app --reload --host 0.0.0.0 --port 8001
+
+# Production
+uvicorn main:app --host 0.0.0.0 --port 8001 --workers 4
+\end{verbatim}
+
+\section{Frontend Setup}
+
+\subsection{Install and Run}
+
+\begin{verbatim}
+# Navigate to frontend
+cd ../frontend
+
+# Install dependencies
+npm install
+
+# Run development server
+npm run dev
+
+# Build for production
+npm run build
+npm start
+\end{verbatim}
+
+\section{Dataset Preparation}
+
+\subsection{Dataset Structure}
+
+\begin{verbatim}
+dataset/
+├── Fire and Smoke.v14i.yolo26.zip
+├── jalan berlubang.v3-tambahan-dataset.yolo26/
+├── stage3/
+│   ├── train/
+│   │   ├── images/
+│   │   └── labels/
+│   ├── val/
+│   │   ├── images/
+│   │   └── labels/
+│   └── test/
+│       ├── images/
+│       └── labels/
+└── stage3_environment.yaml
+\end{verbatim}
+
+\subsection{YAML Configuration}
+
+\begin{lstlisting}[style=pythonstyle]
+# stage3_fire_smoke.yaml
+path: /path/to/dataset/stage3
+train: train/images
+val: val/images
+test: test/images
+
+nc: 2
+names: ['fire', 'smoke']
+\end{lstlisting}
+
+\section{Training}
+
+\subsection{Local Training}
+
+\begin{verbatim}
+cd training
+python train_stage3_fire_smoke.py
+\end{verbatim}
+
+\subsection{Kaggle Training}
+
+\begin{enumerate}
+    \item Upload training notebook to Kaggle
+    \item Attach dataset from \texttt{/kaggle/input}
+    \item Enable GPU P100/T4
+    \item Run All cells
+    \item Download \texttt{best\_stage3\_fire\_smoke.pt} from Output
+\end{enumerate}
+
+\section{Model Deployment}
+
+\begin{verbatim}
+# Copy trained model to backend/models/
+cp best_stage3_fire_smoke.pt ../backend/models/
+
+# Restart backend to load new model
+uvicorn main:app --reload
+\end{verbatim}
+
+% ============================================================================
+% CHAPTER 8: API REFERENCE
+% ============================================================================
+\chapter{API Reference}
+
+\section{REST Endpoints}
+
+\subsection{Zone Management}
+
+\subsubsection{GET /polygons}
+
+Retrieve all zones.
+
+\textbf{Response:}
+\begin{lstlisting}[style=jsonstyle]
+{
+  "zones": [
+    {
+      "id": 1,
+      "name": "Restricted Area A",
+      "vertices": [[0.1, 0.2], [0.3, 0.4], ...],
+      "color": "#FF0000",
+      "active": true,
+      "risk_level": "high",
+      "zone_type": "restricted",
+      "dwell_threshold_sec": 10
+    }
+  ]
+}
+\end{lstlisting}
+
+\subsubsection{POST /polygons}
+
+Create a new zone.
+
+\textbf{Request Body:}
+\begin{lstlisting}[style=jsonstyle]
+{
+  "name": "Restricted Area A",
+  "vertices": [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]],
+  "color": "#FF0000",
+  "risk_level": "high",
+  "zone_type": "restricted",
+  "dwell_threshold_sec": 10
+}
+\end{lstlisting}
+
+\subsection{Alert Management}
+
+\subsubsection{GET /alerts}
+
+Retrieve paginated alerts.
+
+\textbf{Query Parameters:}
+\begin{itemize}
+    \item \texttt{page}: Page number (default: 1)
+    \item \texttt{limit}: Items per page (default: 20)
+    \item \texttt{resolved}: Filter by resolved status
+    \item \texttt{violation\_type}: Filter by violation type
+    \item \texttt{zone\_id}: Filter by zone ID
+    \item \texttt{start\_date}: Filter by start date
+    \item \texttt{end\_date}: Filter by end date
+\end{itemize}
+
+\textbf{Response:}
+\begin{lstlisting}[style=jsonstyle]
+{
+  "alerts": [...],
+  "total": 100,
+  "page": 1,
+  "limit": 20
+}
+\end{lstlisting}
+
+\section{WebSocket Endpoints}
+
+\subsection{/ws/alerts}
+
+Real-time alert push to connected clients.
+
+\textbf{Server Message:}
+\begin{lstlisting}[style=jsonstyle]
+{
+  "type": "alert",
+  "data": {
+    "id": 123,
+    "zone_name": "Restricted Area A",
+    "violation_type": "ZONE_VIOLATION",
+    "confidence": 0.85,
+    "timestamp": "2024-01-15T10:30:00Z",
+    "snapshot_path": "/static/snapshots/alert_123.jpg",
+    "shutdown_triggered": true
+  }
+}
+\end{lstlisting}
+
+\subsection{/ws/camera}
+
+Browser camera → AI → annotated frame pipeline.
+
+\textbf{Client sends:} Base64 encoded frame
+\textbf{Server receives:} Annotated frame with bounding boxes
+
+\section{Detection Classes Reference}
+
+\subsection{PPE Detection Classes}
+
+\begin{tabular}{|l|l|l|}
+    \hline
+    \textbf{Class ID} & \textbf{Name} & \textbf{Associated Violation} \\
+    \hline
+    0 & UNKNOWN & None \\
+    \hline
+    1 & BELT & NO\_BELT \\
+    \hline
+    2 & HELMET & NO\_HELMET \\
+    \hline
+    3 & VEST & NO\_VEST \\
+    \hline
+\end{tabular}
+
+\subsection{Violation Types}
+
+\begin{tabular}{|l|l|l|}
+    \hline
+    \textbf{Violation Type} & \textbf{Severity} & \textbf{Action} \\
+    \hline
+    NO\_HELMET & High & Alert + Log \\
+    \hline
+    NO\_VEST & High & Alert + Log \\
+    \hline
+    NO\_BELT & Medium & Alert + Log \\
+    \hline
+    ZONE\_VIOLATION & High & Alert + Shutdown + WhatsApp \\
+    \hline
+    DWELL\_WARNING & Medium & Alert + Log \\
+    \hline
+    DWELL\_CRITICAL & High & Alert + Shutdown + WhatsApp \\
+    \hline
+    HAZARD\_PROXIMITY & High & Alert + Log \\
+    \hline
+\end{tabular}
+
+% ============================================================================
+% CHAPTER 9: TROUBLESHOOTING
+% ============================================================================
+\chapter{Troubleshooting}
+
+\section{Common Issues}
+
+\subsection{Camera Not Displaying}
+
+\textbf{Symptoms:} VideoCanvas shows "Camera Offline" overlay.
+
+\textbf{Solutions:}
+\begin{enumerate}
+    \item Check camera source configuration in \texttt{.env}
+    \item Verify IP camera is accessible and streaming
+    \item Check if MJPEG stream endpoint responds: \texttt{GET /stream}
+    \item Restart backend service
+\end{enumerate}
+
+\subsection{Detection Not Working}
+
+\textbf{Symptoms:} No bounding boxes on stream, no person detection.
+
+\textbf{Solutions:}
+\begin{enumerate}
+    \item Verify YOLO model files exist in \texttt{backend/models/}
+    \item Check model filenames match configuration in \texttt{detector.py}
+    \item Ensure GPU is available and CUDA is installed
+    \item Check confidence thresholds are appropriate
+    \item Review backend logs for detection errors
+\end{enumerate}
+
+\subsection{WhatsApp Notifications Not Sending}
+
+\textbf{Symptoms:} Alerts logged but no WhatsApp message received.
+
+\textbf{Solutions:}
+\begin{enumerate}
+    \item Verify FONNTE\_TOKEN is set correctly in \texttt{.env}
+    \item Check DEFAULT\_RECIPIENTS contains valid phone numbers
+    \item Test notification manually via \texttt{POST /settings/notify-test}
+    \item Check Fonnte API status and quota
+\end{enumerate}
+
+\subsection{Zone Polygon Drawing Not Working}
+
+\textbf{Symptoms:} Clicking on canvas does not place vertices.
+
+\textbf{Solutions:}
+\begin{enumerate}
+    \item Ensure "Tambah Zona" drawing mode is activated
+    \item Check browser console for JavaScript errors
+    \item Verify WebSocket connection is established
+    \item Clear browser cache and reload
+\end{enumerate}
+
+\subsection{Training Fails}
+
+\textbf{Symptoms:} Training notebook errors or poor mAP results.
+
+\textbf{Solutions:}
+\begin{enumerate}
+    \item Verify dataset structure is correct (train/val/images + labels)
+    \item Check label files for correct class IDs (0=fire, 1=smoke)
+    \item Ensure YAML \texttt{names} is a LIST not a dict
+    \item Adjust batch size if GPU OOM errors occur
+    \item Verify YOLOv8n model downloads successfully
+\end{enumerate}
+
+\section{Performance Optimization}
+
+\subsection{GPU Memory Issues}
+
+If encountering CUDA out of memory errors:
+\begin{itemize}
+    \item Reduce batch size to 8 or 4
+    \item Reduce image size to 416 or 320
+    \item Process frames at lower frequency (increase DETECTION\_INTERVAL)
+    \item Disable unnecessary detection stages
+\end{itemize}
+
+\subsection{Slow Inference}
+
+If detection is too slow:
+\begin{itemize}
+    \item Use YOLOv8n (nano) instead of larger models
+    \item Enable detection interval (process every N frames)
+    \item Reduce MJPEG stream quality
+    \item Limit number of active zones
+\end{itemize}
+
+\section{Log Locations}
+
+\begin{tabular}{|l|l|}
+    \hline
+    \textbf{Component} & \textbf{Log Location} \\
+    \hline
+    Backend FastAPI & stdout/stderr \\
+    \hline
+    Frontend Next.js & Browser console \\
+    \hline
+    Model Training & \texttt{training/runs/stage3\_fire\_smoke/} \\
+    \hline
+    Snapshots & \texttt{backend/static/snapshots/} \\
+    \hline
+    Video Jobs & Database video\_jobs table \\
+    \hline
+\end{tabular}
+
+% ============================================================================
+% APPENDIX
+% ============================================================================
+\appendix
+
+\chapter{Glossary}
+
+\begin{tabular}{|l|p{10cm}|}
+    \hline
+    \textbf{Term} & \textbf{Definition} \\
+    \hline
+    SIEWS & Smart Integrated Early Warning System \\
+    \hline
+    PPE & Personal Protective Equipment (helmet, vest, belt) \\
+    \hline
+    MJPEG & Motion JPEG - video streaming format \\
+    \hline
+    IoU & Intersection over Union - bounding box overlap metric \\
+    \hline
+    YOLO & You Only Look Once - object detection architecture \\
+    \hline
+    OCR & Optical Character Recognition - text reading from images \\
+    \hline
+    WebSocket & Bidirectional real-time communication protocol \\
+    \hline
+    ROI & Region of Interest \\
+    \hline
+    FPS & Frames Per Second \\
+    \hline
+    UUID & Universal Unique Identifier \\
+    \hline
+    Fonnte & WhatsApp API service provider \\
+    \hline
+\end{tabular}
+
+\chapter{Class Enumerations}
+
+\section{PPEClass}
+
+\begin{lstlisting}[style=pythonstyle]
+class PPEClass(IntEnum):
+    UNKNOWN = 0
+    BELT = 1
+    HELMET = 2
+    VEST = 3
+\end{lstlisting}
+
+\section{EnvClass}
+
+\begin{lstlisting}[style=pythonstyle]
+class EnvClass(IntEnum):
+    BARRICADE = 0
+    HARD_HAT = 1
+    SAFETY_CONE = 2
+    OPEN_HOLE = 3
+    VEST_ENV = 4
+\end{lstlisting}
+
+\section{RoadClass}
+
+\begin{lstlisting}[style=pythonstyle]
+class RoadClass(IntEnum):
+    LUBANG = 0    # Pothole
+    RETAK = 1     # Crack
+    TAMBALAN = 2  # Patch
+\end{lstlisting}
+
+\chapter{File Inventory}
+
+\section{Backend Files}
+
+\begin{longtable}{|l|l|p{6cm}|}
+    \hline
+    \textbf{File} & \textbf{Lines} & \textbf{Purpose} \\
+    \hline
+    main.py & ~800 & FastAPI app, all endpoints \\
+    \hline
+    stream.py & ~400 & StreamManager class \\
+    \hline
+    detector.py & ~300 & MultiStagePipeline \\
+    \hline
+    polygon.py & ~100 & Ray-casting algorithm \\
+    \hline
+    zone\_tracker.py & ~250 & PersonZoneTracker \\
+    \hline
+    violation\_checker.py & ~200 & ViolationChecker \\
+    \hline
+    notifier.py & ~100 & WhatsApp integration \\
+    \hline
+    shutdown.py & ~50 & Relay trigger \\
+    \hline
+    models.py & ~200 & SQLAlchemy models \\
+    \hline
+    database.py & ~50 & DB connection \\
+    \hline
+    face\_manager.py & ~300 & Face recognition \\
+    \hline
+    ocr\_engine.py & ~150 & OCR processing \\
+    \hline
+    detection\_models.py & ~100 & Class enums \\
+    \hline
+\end{longtable}
+
+\section{Frontend Pages}
+
+\begin{longtable}{|l|l|p{6cm}|}
+    \hline
+    \textbf{Page} & \textbf{Location} & \textbf{Purpose} \\
+    \hline
+    Dashboard & app/dashboard/page.tsx & Main monitoring interface \\
+    \hline
+    Incidents & app/incidents/page.tsx & Alert history and export \\
+    \hline
+    Zones & app/zones/page.tsx & Zone management \\
+    \hline
+    Settings & app/settings/page.tsx & System configuration \\
+    \hline
+    Analyze & app/analyze/page.tsx & Image analysis tool \\
+    \hline
+    Video Analysis & app/video-analysis/page.tsx & Video processing \\
+    \hline
+    Faces & app/faces/page.tsx & Personnel registry \\
+    \hline
+\end{longtable}
+
+% References
+\begin{thebibliography}{99}
+
+\addcontentsline{toc}{section}{References}
+
+bibitem{yolov8}
+Ultralytics, ``YOLOv8 Documentation,'' 2024. [Online]. Available: \url{https://docs.ultralytics.com/}
+
+bibitem{fastapi}
+FastAPI, ``FastAPI Documentation,'' 2024. [Online]. Available: \url{https://fastapi.tiangolo.com/}
+
+bibitem{nextjs}
+Vercel, ``Next.js Documentation,'' 2024. [Online]. Available: \url{https://nextjs.org/docs}
+
+bibitem{roboflow}
+Roboflow, ``Roboflow Universe,'' 2024. [Online]. Available: \url{https://universe.roboflow.com/}
+
+bibitem{fonnte}
+Fonnte, ``Fonnte WhatsApp API,'' 2024. [Online]. Available: \url{https://fonnte.com/}
+
+bibitem{dlib}
+Davis King, ``dlib Documentation,'' 2024. [Online]. Available: \url{http://dlib.net/}
+
+bibitem{easyocr}
+JaidedAI, ``EasyOCR Documentation,'' 2024. [Online]. Available: \url{https://www.jaided.ai/easyocr/}
+
+\end{thebibliography}
+
+\printindex
+
+\end{document}

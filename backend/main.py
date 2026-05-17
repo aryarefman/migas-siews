@@ -331,11 +331,51 @@ async def start_simulation(file: UploadFile = File(...)):
     stream_manager.simulation_frame = frame
     return {"status": "simulation_active", "message": "Gambar telah disuntikkan ke stream live"}
 
+
+@app.post("/stream/simulate-video")
+async def simulate_video(job_id: int = Query(...)):
+    """Inject a processed video into the live stream as simulation.
+    The video plays in loop, all detection pipeline runs on it (zones, PPE, alerts, WhatsApp)."""
+    from database import SessionLocal
+    db = SessionLocal()
+    try:
+        job = db.query(VideoJob).filter(VideoJob.id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="Video job not found")
+        
+        video_path = job.file_path  # Use original video (not annotated) for fresh detection
+        if not os.path.exists(video_path):
+            raise HTTPException(status_code=404, detail="Video file not found on disk")
+        
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise HTTPException(status_code=500, detail="Cannot open video file")
+        
+        # Stop any existing simulation
+        stream_manager.simulation_frame = None
+        if stream_manager.simulation_cap is not None:
+            stream_manager.simulation_cap.release()
+        
+        # Set video as simulation source
+        stream_manager.simulation_cap = cap
+        
+        return {
+            "status": "simulation_active",
+            "source": "video",
+            "filename": job.filename,
+            "message": f"Video '{job.filename}' now playing as live feed. All detections active.",
+        }
+    finally:
+        db.close()
+
+
 @app.post("/stream/reset")
 async def reset_stream():
     """Stop simulation and return to live camera feed."""
     stream_manager.simulation_frame = None
-    stream_manager.open_camera()
+    if stream_manager.simulation_cap is not None:
+        stream_manager.simulation_cap.release()
+        stream_manager.simulation_cap = None
     return {"status": "live_active", "message": "Kembali ke kamera live"}
 
 
@@ -550,6 +590,39 @@ def resolve_all_alerts(db: Session = Depends(get_db)):
     count = db.query(Alert).filter(Alert.resolved == False).update({"resolved": True})
     db.commit()
     return {"status": "resolved", "count": count}
+
+
+@app.delete("/alerts/{alert_id}")
+def delete_alert(alert_id: int, db: Session = Depends(get_db)):
+    """Delete a single alert and its snapshot."""
+    alert = db.query(Alert).filter(Alert.id == alert_id).first()
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    # Delete snapshot file
+    if alert.snapshot_path:
+        snap_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), alert.snapshot_path)
+        if os.path.exists(snap_path):
+            os.remove(snap_path)
+    db.delete(alert)
+    db.commit()
+    return {"status": "deleted", "id": alert_id}
+
+
+@app.delete("/alerts/all")
+def delete_all_alerts(db: Session = Depends(get_db)):
+    """Delete ALL alerts and their snapshots."""
+    alerts = db.query(Alert).all()
+    for a in alerts:
+        if a.snapshot_path:
+            snap_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), a.snapshot_path)
+            if os.path.exists(snap_path):
+                try:
+                    os.remove(snap_path)
+                except:
+                    pass
+    count = db.query(Alert).delete()
+    db.commit()
+    return {"status": "deleted", "count": count}
 
 
 @app.post("/alerts/{alert_id}/false-positive")

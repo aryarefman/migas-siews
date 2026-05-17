@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import AlertCard from "./AlertCard";
 import DetailPanel from "./DetailPanel";
+import { showToast } from "./Toast";
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8001";
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
@@ -101,6 +102,27 @@ export default function AlertFeed({ onAlert, onShutdown }: AlertFeedProps) {
               onAlert(alert);
               if (alert.shutdown_triggered) onShutdown(alert);
               
+              // Toast notification
+              const violationType = alert.violation_type || "";
+              let message = "";
+              let type: "success" | "error" | "info" = "error";
+
+              if (violationType === "fire_smoke") {
+                message = `🔥 FIRE/SMOKE detected — ${alert.zone_name}`;
+              } else if (violationType === "ppe_violation") {
+                message = `⚠️ PPE Violation — ${alert.person_name || "Unknown"} (${(alert.confidence * 100).toFixed(0)}%)`;
+              } else if (violationType === "zone_violation") {
+                message = `🚨 Zone Intrusion — ${alert.person_name || "Someone"} entered ${alert.zone_name}`;
+              } else if (violationType === "road_damage") {
+                message = `🕳️ Road Damage detected — ${alert.zone_name}`;
+              } else if (violationType === "hazard_violation") {
+                message = `⚠️ Hazard Alert — ${alert.zone_name}`;
+              } else {
+                message = `🚨 Alert — ${alert.zone_name} (${(alert.confidence * 100).toFixed(0)}%)`;
+              }
+
+              showToast({ message, type: alert.risk_level === "high" ? "error" : "info" });
+
               // Audio alert
               playNotificationSound(alert.risk_level === "high");
             }
@@ -157,6 +179,7 @@ export default function AlertFeed({ onAlert, onShutdown }: AlertFeedProps) {
       if (selectedAlert && selectedAlert.alert_id === alertId) {
         setSelectedAlert({ ...selectedAlert, resolved: true });
       }
+      showToast({ message: "✅ Alert resolved", type: "success" });
       window.dispatchEvent(new Event("siews-stats-refresh"));
     } catch {}
   };
@@ -168,6 +191,7 @@ export default function AlertFeed({ onAlert, onShutdown }: AlertFeedProps) {
       if (selectedAlert && selectedAlert.alert_id === alertId) {
         setSelectedAlert({ ...selectedAlert, resolved: true, false_positive: true });
       }
+      showToast({ message: "🚫 Marked as false positive", type: "info" });
       window.dispatchEvent(new Event("siews-stats-refresh"));
     } catch {}
   };

@@ -13,7 +13,7 @@ from typing import Optional, List
 import cv2
 import numpy as np
 
-from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query, UploadFile, File, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query, UploadFile, File, BackgroundTasks, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
@@ -592,6 +592,40 @@ def mark_false_positive(alert_id: int, req: FalsePositiveRequest, db: Session = 
     return {"status": "marked_false_positive", "id": alert_id, "adjusted_class": class_label}
 
 
+@app.delete("/alerts/{alert_id}")
+def delete_alert(alert_id: int, db: Session = Depends(get_db)):
+    """Delete a single alert and its snapshot file."""
+    alert = db.query(Alert).filter(Alert.id == alert_id).first()
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    # Delete related detection logs
+    db.query(DetectionLog).filter(DetectionLog.alert_id == alert_id).delete()
+    # Delete snapshot file
+    if alert.snapshot_path:
+        snapshot_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), alert.snapshot_path)
+        if os.path.exists(snapshot_file):
+            os.remove(snapshot_file)
+    db.delete(alert)
+    db.commit()
+    return {"status": "deleted", "id": alert_id}
+
+
+@app.delete("/alerts")
+def delete_all_alerts(db: Session = Depends(get_db)):
+    """Delete all alerts and their snapshot files."""
+    import shutil
+    db.query(DetectionLog).delete()
+    count = db.query(Alert).count()
+    db.query(Alert).delete()
+    db.commit()
+    # Clear snapshot directory
+    snapshot_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "snapshots")
+    if os.path.exists(snapshot_dir):
+        shutil.rmtree(snapshot_dir)
+        os.makedirs(snapshot_dir)
+    return {"status": "deleted", "count": count}
+
+
 @app.get("/alerts/{alert_id}/detections")
 def get_detection_logs(alert_id: int, db: Session = Depends(get_db)):
     """Get per-object detection crops for an alert."""
@@ -878,8 +912,8 @@ def list_video_jobs(db: Session = Depends(get_db)):
 
 
 @app.get("/video/annotated/{job_id}")
-def get_annotated_video(job_id: int, db: Session = Depends(get_db)):
-    """Serve the annotated video file for a job."""
+def get_annotated_video(job_id: int, request: Request, db: Session = Depends(get_db)):
+    """Serve the annotated video file with HTTP Range support for browser playback."""
     job = db.query(VideoJob).filter(VideoJob.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -889,17 +923,55 @@ def get_annotated_video(job_id: int, db: Session = Depends(get_db)):
     if not video_path or (not os.path.exists(video_path) and not os.path.exists(job.annotated_video_path)):
         raise HTTPException(status_code=404, detail="Annotated video not found")
 
-    # Get filename from path and serve from static/uploads
+    # Resolve actual file path
     filename = os.path.basename(video_path)
     static_path = os.path.join(STATIC_DIR, "uploads", filename)
     if os.path.exists(static_path):
-        return FileResponse(static_path, media_type="video/mp4")
-    # Fallback: try the stored path (with both slash types)
-    if os.path.exists(video_path):
-        return FileResponse(video_path, media_type="video/mp4")
-    if os.path.exists(job.annotated_video_path):
-        return FileResponse(job.annotated_video_path, media_type="video/mp4")
-    raise HTTPException(status_code=404, detail="Annotated video file not found on disk")
+        file_path = static_path
+    elif os.path.exists(video_path):
+        file_path = video_path
+    elif os.path.exists(job.annotated_video_path):
+        file_path = job.annotated_video_path
+    else:
+        raise HTTPException(status_code=404, detail="Annotated video file not found on disk")
+
+    file_size = os.path.getsize(file_path)
+    range_header = request.headers.get("range")
+
+    if range_header:
+        # Parse Range header: "bytes=start-end"
+        range_str = range_header.replace("bytes=", "")
+        parts = range_str.split("-")
+        start = int(parts[0]) if parts[0] else 0
+        end = int(parts[1]) if parts[1] else file_size - 1
+        end = min(end, file_size - 1)
+        content_length = end - start + 1
+
+        def iter_file():
+            with open(file_path, "rb") as f:
+                f.seek(start)
+                remaining = content_length
+                while remaining > 0:
+                    chunk_size = min(65536, remaining)
+                    data = f.read(chunk_size)
+                    if not data:
+                        break
+                    remaining -= len(data)
+                    yield data
+
+        return StreamingResponse(
+            iter_file(),
+            status_code=206,
+            media_type="video/mp4",
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(content_length),
+            },
+        )
+
+    # No range header — return full file
+    return FileResponse(file_path, media_type="video/mp4", headers={"Accept-Ranges": "bytes"})
 
 
 @app.get("/video/jobs/{job_id}")
@@ -950,9 +1022,45 @@ def delete_video_job(job_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Job not found")
     if os.path.exists(job.file_path):
         os.remove(job.file_path)
+    # Also delete annotated video if exists
+    if job.annotated_video_path and os.path.exists(job.annotated_video_path):
+        os.remove(job.annotated_video_path)
     db.delete(job)
     db.commit()
     return {"status": "deleted", "id": job_id}
+
+
+@app.post("/video/jobs/{job_id}/reprocess")
+async def reprocess_video(job_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Re-process an existing video job with current zones. Generates new alerts."""
+    job = db.query(VideoJob).filter(VideoJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if not os.path.exists(job.file_path):
+        raise HTTPException(status_code=404, detail="Original video file not found")
+
+    # Delete old annotated video
+    if job.annotated_video_path and os.path.exists(job.annotated_video_path):
+        os.remove(job.annotated_video_path)
+
+    # Reset job status
+    job.status = "pending"
+    job.progress = 0
+    job.processed_frames = 0
+    job.result_json = None
+    job.annotated_video_path = None
+    job.error_message = None
+    job.completed_at = None
+    db.commit()
+
+    # Start reprocessing in background
+    background_tasks.add_task(video_processor.process_video, job.id)
+
+    return {
+        "job_id": job.id,
+        "status": "pending",
+        "message": "Video re-processing started with current zones.",
+    }
 
 
 # ─── Image Analysis ───────────────────────────────────────────

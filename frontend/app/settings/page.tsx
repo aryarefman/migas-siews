@@ -13,6 +13,7 @@ const TABS = [
   { id: "camera", label: "Camera & Detection", icon: "M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" },
   { id: "notifications", label: "Notifications", icon: "M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" },
   { id: "model-test", label: "Model Testing", icon: "M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" },
+  { id: "video-sim", label: "Video Simulation", icon: "M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z M21 12a9 9 0 11-18 0 9 9 0 0118 0z" },
   { id: "video", label: "Video Processing", icon: "M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z" },
 ];
 
@@ -329,6 +330,58 @@ export default function SettingsPage() {
                   </div>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Video Simulation — Play video as live feed with all detection features */}
+          {activeTab === "video-sim" && (
+            <div className="space-y-5">
+              <div className="surface-card p-6">
+                <h2 className="text-sm font-semibold text-[var(--text-main)] mb-2">Video Simulation</h2>
+                <p className="text-xs text-[var(--text-muted)] mb-5">Play a processed video as live camera feed. All detection features active: face recognition, PPE check, zone violations, WhatsApp alerts.</p>
+
+                {/* Video list */}
+                <div className="space-y-2 mb-4">
+                  {videoJobs.filter(j => j.status === "done").length === 0 ? (
+                    <p className="text-center py-6 text-xs" style={{ color: "var(--text-faint)" }}>No videos ready. Upload via Video Processing tab first.</p>
+                  ) : (
+                    videoJobs.filter(j => j.status === "done").map(job => (
+                      <div key={job.id} className="p-3 rounded-lg border flex items-center justify-between" style={{ background: "var(--bg-input)", borderColor: "var(--border)" }}>
+                        <div>
+                          <span className="text-sm font-medium" style={{ color: "var(--text-main)" }}>{job.filename}</span>
+                          <p className="text-[10px]" style={{ color: "var(--text-faint)" }}>{new Date(job.created_at).toLocaleString()}</p>
+                        </div>
+                        <button onClick={async () => {
+                          try {
+                            const r = await fetch(`${API_URL}/stream/simulate-video?job_id=${job.id}`, { method: "POST" });
+                            if (r.ok) showToastMsg(`Playing "${job.filename}" — go to Dashboard to see live feed`);
+                            else showToastMsg("Failed to start", "error");
+                          } catch { showToastMsg("Error", "error"); }
+                        }} className="px-3 py-1.5 rounded-lg text-xs font-medium bg-purple-500/15 text-purple-400 hover:bg-purple-500/25 transition-all">
+                          ▶ Play as Live
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                {/* Stop button */}
+                <button onClick={async () => {
+                  await fetch(`${API_URL}/stream/reset`, { method: "POST" });
+                  showToastMsg("Simulation stopped");
+                }} className="w-full py-2 rounded-lg text-xs font-medium border border-red-500/20 text-red-400 hover:bg-red-500/10 transition-all">
+                  Stop Simulation → Back to Camera
+                </button>
+              </div>
+
+              {/* Live preview */}
+              <div className="surface-card p-4">
+                <h3 className="text-xs font-semibold text-[var(--text-muted)] uppercase mb-3">Live Preview (with detections)</h3>
+                <div className="rounded-lg overflow-hidden border" style={{ borderColor: "var(--border)" }}>
+                  <img src={`${API_URL}/stream`} alt="Simulation Feed" className="w-full aspect-video object-contain bg-black" />
+                </div>
+                <p className="text-[10px] mt-2" style={{ color: "var(--text-faint)" }}>This shows the MJPEG stream with all AI detections overlaid. Zone violations and PPE alerts will trigger in real-time.</p>
+              </div>
             </div>
           )}
         </div>

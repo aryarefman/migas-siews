@@ -2,6 +2,7 @@
 SIEWS+ 5.0 — Async Video Upload Processor
 Processes uploaded video files frame-by-frame using the multi-stage pipeline.
 Results are stored in VideoJob table and retrievable via REST API.
+Generates alerts for detected violations (PPE, zone, fire/smoke, etc.)
 """
 import cv2
 import json
@@ -13,12 +14,18 @@ from typing import Optional
 
 from detector import MultiStagePipeline
 from database import SessionLocal
-from models import VideoJob
+from models import VideoJob, Alert, Zone, Setting
+from violation_checker import ViolationChecker
 
 UPLOADS_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "static", "uploads"
 )
 os.makedirs(UPLOADS_DIR, exist_ok=True)
+
+SNAPSHOT_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "static", "snapshots"
+)
+os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 
 # Process every Nth frame to speed up video analysis (1 = all frames, 5 = skip 4/5 frames)
 VIDEO_PROCESS_INTERVAL = 1  # Changed to 1 for full video output
@@ -31,11 +38,83 @@ class VideoProcessor:
         self._pipeline: Optional[MultiStagePipeline] = None
         self._max_retries = 3
         self._retry_delay = 5.0  # seconds
+        self._violation_checker = ViolationChecker(cooldown_seconds=5)
 
     def _get_pipeline(self) -> MultiStagePipeline:
         if self._pipeline is None:
             self._pipeline = MultiStagePipeline(confidence=0.25, ppe_confidence=0.30)
         return self._pipeline
+
+    async def _generate_alerts(self, db, frame, result, zones_data, frame_width, frame_height, timestamp_sec, job_id):
+        """Generate alerts for violations found in a video frame."""
+        persons = result["persons"]
+        hazards = result.get("env", [])
+        road = result.get("road", [])
+
+        violations = self._violation_checker.check_all_violations(
+            persons=persons,
+            hazards=hazards,
+            zones=zones_data,
+            frame_width=frame_width,
+            frame_height=frame_height,
+            road_detections=road,
+        )
+
+        if not violations:
+            return
+
+        # Broadcast alerts via WebSocket
+        from stream import stream_manager
+
+        for violation in violations:
+            if not self._violation_checker.should_alert(violation.zone_id, violation.violation_type):
+                continue
+
+            now_utc = datetime.now(timezone.utc)
+            timestamp_str = now_utc.strftime("%Y%m%d_%H%M%S")
+            snapshot_filename = f"video_{job_id}_{timestamp_str}_{violation.zone_id}.jpg"
+            snapshot_path = os.path.join(SNAPSHOT_DIR, snapshot_filename)
+            cv2.imwrite(snapshot_path, frame)
+
+            try:
+                alert = Alert(
+                    zone_id=violation.zone_id,
+                    confidence=violation.confidence,
+                    snapshot_path=f"static/snapshots/{snapshot_filename}",
+                    timestamp=now_utc,
+                    shutdown_triggered=False,
+                    resolved=False,
+                    violation_type=violation.violation_type,
+                    person_name=violation.person_name,
+                    uniform_code=violation.uniform_code,
+                    ppe_detail=json.dumps(violation.ppe_detail) if violation.ppe_detail else None,
+                )
+                db.add(alert)
+                db.commit()
+                db.refresh(alert)
+
+                # Push to WebSocket clients
+                ws_event = {
+                    "type": "alert",
+                    "alert_id": alert.id,
+                    "zone_name": violation.zone_name,
+                    "zone_id": violation.zone_id,
+                    "risk_level": violation.risk_level,
+                    "timestamp": now_utc.isoformat(),
+                    "confidence": violation.confidence,
+                    "snapshot_url": f"/static/snapshots/{snapshot_filename}",
+                    "shutdown_triggered": False,
+                    "person_name": violation.person_name,
+                    "uniform_code": violation.uniform_code,
+                    "violation_type": violation.violation_type,
+                    "ppe_detail": violation.ppe_detail,
+                    "source": "video",
+                }
+                await stream_manager._broadcast_to_ws(ws_event)
+
+            except Exception as e:
+                print(f"[VIDEO-ALERT] Error creating alert: {e}")
+                db.rollback()
 
     async def process_video(self, job_id: int):
         """
@@ -114,6 +193,19 @@ class VideoProcessor:
             if out is None or not out.isOpened():
                 raise Exception(f"Failed to open video writer for {output_path} with any codec")
 
+            # Load active zones for violation checking
+            active_zones = db.query(Zone).filter(Zone.active == True).all()
+            zones_data = [
+                {
+                    "id": z.id,
+                    "name": z.name,
+                    "vertices": json.loads(z.vertices_json),
+                    "color": z.color,
+                    "risk_level": z.risk_level,
+                }
+                for z in active_zones
+            ]
+
             while True:
                 ret, frame = cap.read()
                 if not ret:
@@ -132,52 +224,51 @@ class VideoProcessor:
                 result = pipeline.run(frame)
                 timestamp_sec = frame_idx / fps
 
-                # Annotate frame with bounding boxes
-                annotated = frame.copy()
-                violation_indices = {i for i, p in enumerate(result["persons"]) if p.get("ppe_violations")}
+                # ── Check zone violations for this frame ──────────────
+                persons = result["persons"]
+                hazards = result.get("env", [])
+                road_damage = result.get("road", [])
+                safety_cones = result.get("safety_cones", [])
+                vehicles = result.get("vehicles", [])
 
-                # Draw persons
-                for i, p in enumerate(result["persons"]):
-                    bbox = p["bbox"]
-                    x1, y1, x2, y2 = [int(v) for v in bbox]
-                    color = (0, 0, 255) if i in violation_indices else (0, 255, 0)
-                    cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
-                    label = f"Person {p['confidence']:.0%}"
+                violations = self._violation_checker.check_all_violations(
+                    persons=persons,
+                    hazards=hazards,
+                    zones=zones_data,
+                    frame_width=width,
+                    frame_height=height,
+                    road_detections=road_damage,
+                )
+                violation_indices = self._violation_checker.get_violation_indices(persons, violations)
+
+                # Also mark persons inside zones as violations
+                from polygon import point_in_polygon
+                for i, det in enumerate(persons):
                     if i in violation_indices:
-                        label = f"BAHAYA {p['confidence']:.0%}"
-                    cv2.putText(annotated, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                        continue
+                    bbox = det["bbox"]
+                    cx = ((bbox[0] + bbox[2]) / 2) / width
+                    cy = ((bbox[1] + bbox[3]) / 2) / height
+                    for z in zones_data:
+                        verts = z.get("vertices", [])
+                        if len(verts) >= 3 and point_in_polygon([cx, cy], verts):
+                            violation_indices.add(i)
+                            break
 
-                # Draw env hazards
-                for d in result["env"]:
-                    bbox = d["bbox"]
-                    x1, y1, x2, y2 = [int(v) for v in bbox]
-                    cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                    label = f"DANGER: {d.get('class_name', 'Hazard')} {d['confidence']:.0%}"
-                    cv2.putText(annotated, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                # Get violated zone IDs for zone drawing
+                violated_zone_ids = set()
+                for v in violations:
+                    if v.violation_type == "zone_violation":
+                        violated_zone_ids.add(v.zone_id)
 
-                # Draw road damage
-                for r in result.get("road", []):
-                    bbox = r["bbox"]
-                    x1, y1, x2, y2 = [int(v) for v in bbox]
-                    cv2.rectangle(annotated, (x1, y1), (x2, y2), (255, 0, 0), 2)
-                    label = f"ROAD: {r.get('class_name', 'Damage')} {r['confidence']:.0%}"
-                    cv2.putText(annotated, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
-
-                # Draw safety cones
-                for s in result.get("safety_cones", []):
-                    bbox = s["bbox"]
-                    x1, y1, x2, y2 = [int(v) for v in bbox]
-                    cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    label = f"Safety-cone {s['confidence']:.0%}"
-                    cv2.putText(annotated, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-
-                # Draw vehicles
-                for v in result.get("vehicles", []):
-                    bbox = v["bbox"]
-                    x1, y1, x2, y2 = [int(val) for val in bbox]
-                    cv2.rectangle(annotated, (x1, y1), (x2, y2), (255, 0, 255), 2)
-                    label = f"VEHICLE: {v.get('class_name', 'vehicle')} {v['confidence']:.0%}"
-                    cv2.putText(annotated, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
+                # Annotate frame using the proper drawing module
+                annotated = frame.copy()
+                from drawing import (
+                    draw_detections,
+                    draw_zones,
+                )
+                draw_zones(annotated, zones_data, violated_zone_ids)
+                draw_detections(annotated, persons, violation_indices, hazards, road_damage, safety_cones, vehicles)
 
                 # Write annotated frame
                 out.write(annotated)
@@ -193,7 +284,7 @@ class VideoProcessor:
                             "ppe_violations": p.get("ppe_violations", []),
                             "ppe": p.get("ppe_result", {}),
                         }
-                        for p in result["persons"]
+                        for p in persons
                     ],
                     "env": [
                         {
@@ -202,7 +293,7 @@ class VideoProcessor:
                             "bbox": d["bbox"],
                             "category": d.get("category"),
                         }
-                        for d in result["env"]
+                        for d in hazards
                     ],
                     "road": [
                         {
@@ -210,7 +301,7 @@ class VideoProcessor:
                             "confidence": round(r["confidence"], 3),
                             "bbox": r["bbox"],
                         }
-                        for r in result.get("road", [])
+                        for r in road_damage
                     ],
                     "safety_cones": [
                         {
@@ -218,7 +309,7 @@ class VideoProcessor:
                             "confidence": round(s["confidence"], 3),
                             "bbox": s["bbox"],
                         }
-                        for s in result.get("safety_cones", [])
+                        for s in safety_cones
                     ],
                     "vehicles": [
                         {
@@ -227,16 +318,19 @@ class VideoProcessor:
                             "bbox": v["bbox"],
                             "class_id": v.get("class_id"),
                         }
-                        for v in result.get("vehicles", [])
+                        for v in vehicles
                     ],
-                    "has_violation": (
-                        any(p.get("ppe_violations") for p in result["persons"])
-                        or bool(result["env"])
-                        or bool(result.get("road"))
-                    ),
+                    "has_violation": bool(violations),
                 }
                 frame_results.append(frame_data)
                 processed += 1
+
+                # ── Generate alerts for violations ──────────────────────
+                if frame_data["has_violation"]:
+                    await self._generate_alerts(
+                        db, frame, result, zones_data, width, height,
+                        timestamp_sec, job_id
+                    )
 
                 # Update progress in DB every 50 processed frames
                 if processed % 50 == 0:
@@ -258,8 +352,11 @@ class VideoProcessor:
 
             import subprocess
             try:
+                # Use imageio-ffmpeg bundled binary (no system ffmpeg needed)
+                import imageio_ffmpeg
+                ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
                 ffmpeg_cmd = [
-                    "ffmpeg", "-y", "-i", output_path,
+                    ffmpeg_path, "-y", "-i", output_path,
                     "-c:v", "libx264", "-preset", "fast", "-crf", "23",
                     "-pix_fmt", "yuv420p",  # Required for browser compatibility
                     "-movflags", "+faststart",  # Enable streaming
@@ -267,16 +364,24 @@ class VideoProcessor:
                 ]
                 result_ffmpeg = subprocess.run(ffmpeg_cmd, capture_output=True, timeout=300)
                 if result_ffmpeg.returncode == 0 and os.path.exists(final_output):
-                    # Replace original with H264 version
                     os.remove(output_path)
                     os.rename(final_output, output_path)
                     print(f"[VIDEO] Converted to H264: {output_path}")
                 else:
-                    print(f"[VIDEO] FFmpeg failed, keeping original codec: {result_ffmpeg.stderr.decode()[:200]}")
-            except FileNotFoundError:
-                print("[VIDEO] FFmpeg not installed, keeping original codec")
+                    print(f"[VIDEO] FFmpeg failed, applying moov fix: {result_ffmpeg.stderr.decode()[:200]}")
+                    from fix_mp4_moov import fix_moov_position
+                    fix_moov_position(output_path)
+            except ImportError:
+                print("[VIDEO] imageio-ffmpeg not installed, applying moov atom fix")
+                from fix_mp4_moov import fix_moov_position
+                fix_moov_position(output_path)
             except Exception as e:
-                print(f"[VIDEO] FFmpeg error: {e}")
+                print(f"[VIDEO] FFmpeg error: {e}, applying moov fix")
+                try:
+                    from fix_mp4_moov import fix_moov_position
+                    fix_moov_position(output_path)
+                except Exception as e2:
+                    print(f"[VIDEO] Moov fix also failed: {e2}")
 
             # Verify output file exists and has content
             if os.path.exists(output_path):

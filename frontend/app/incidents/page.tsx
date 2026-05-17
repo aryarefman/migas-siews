@@ -155,6 +155,23 @@ export default function IncidentsPage() {
           >
             Resolve All ({unresolvedCount})
           </button>
+          <button
+            onClick={async () => {
+              if (!confirm("Delete ALL alerts and snapshots? This cannot be undone.")) return;
+              try {
+                const res = await fetch(`${API_URL}/alerts`, { method: "DELETE" });
+                if (res.ok) {
+                  setAlerts([]);
+                  showToast({ message: "All alerts deleted", type: "success" });
+                  window.dispatchEvent(new Event("siews-stats-refresh"));
+                }
+              } catch { showToast({ message: "Delete failed", type: "error" }); }
+            }}
+            disabled={alerts.length === 0}
+            className="btn-danger text-xs disabled:opacity-40"
+          >
+            Delete All
+          </button>
           <button onClick={exportCSV} className="btn-ghost text-xs">Export CSV</button>
         </div>
       </div>
@@ -256,16 +273,31 @@ export default function IncidentsPage() {
                       )}
                     </td>
                     <td className="px-5 py-4">
-                      {!alert.resolved ? (
-                        <div className="flex items-center gap-1.5">
-                          <button onClick={(e) => { e.stopPropagation(); handleResolve(alert.alert_id); }} className="btn-ghost text-[10px] py-1 px-2">Resolve</button>
-                          <button onClick={(e) => { e.stopPropagation(); handleFalsePositive(alert.alert_id); }} className="btn-ghost text-[10px] py-1 px-2">False +</button>
-                        </div>
-                      ) : (
-                        alert.snapshot_url && (
+                      <div className="flex items-center gap-1.5">
+                        {!alert.resolved && (
+                          <>
+                            <button onClick={(e) => { e.stopPropagation(); handleResolve(alert.alert_id); }} className="btn-ghost text-[10px] py-1 px-2">Resolve</button>
+                            <button onClick={(e) => { e.stopPropagation(); handleFalsePositive(alert.alert_id); }} className="btn-ghost text-[10px] py-1 px-2">False +</button>
+                          </>
+                        )}
+                        {alert.resolved && alert.snapshot_url && (
                           <button onClick={(e) => { e.stopPropagation(); setSelectedAlert(alert); }} className="btn-ghost text-[10px] py-1 px-2">View</button>
-                        )
-                      )}
+                        )}
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            try {
+                              await fetch(`${API_URL}/alerts/${alert.alert_id}`, { method: "DELETE" });
+                              setAlerts((prev) => prev.filter((a) => a.alert_id !== alert.alert_id));
+                              window.dispatchEvent(new Event("siews-stats-refresh"));
+                            } catch {}
+                          }}
+                          className="p-1 rounded hover:bg-red-500/10 text-[var(--text-faint)] hover:text-red-400 transition-all"
+                          title="Delete alert"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))

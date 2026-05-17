@@ -81,7 +81,7 @@ class ViolationChecker:
                 violations.append(Violation(
                     zone_id=hash(person_key) % 10000,  # Unique per-person
                     zone_name=f"PPE Violation ({', '.join(missing)})",
-                    risk_level="low",
+                    risk_level="high",  # PPE violations are always high risk in industrial safety
                     violation_type="ppe_violation",
                     confidence=det.get("confidence", 0),
                     person_name=det.get("face_name", "Unknown"),
@@ -309,15 +309,14 @@ class ViolationChecker:
 
         # Also check: if a person is inside any zone, highlight that zone
         for det in persons:
-            px = det.get("center_x")
-            py = det.get("center_y")
-            if px is None or py is None:
-                bbox = det.get("bbox", [])
-                if len(bbox) == 4:
-                    px = (bbox[0] + bbox[2]) / 2
-                    py = (bbox[1] + bbox[3]) / 2
-                else:
-                    continue
+            bbox = det.get("bbox", [])
+            if len(bbox) != 4:
+                continue
+            # Normalize to 0-1 range (zones use normalized coords)
+            frame_w = det.get("_frame_w", 640)
+            frame_h = det.get("_frame_h", 480)
+            px = ((bbox[0] + bbox[2]) / 2) / frame_w
+            py = ((bbox[1] + bbox[3]) / 2) / frame_h
 
             for z in zones:
                 zid = z.get("id")
@@ -325,7 +324,7 @@ class ViolationChecker:
                 if zid is None or not vertices or len(vertices) < 3:
                     continue
 
-                if point_in_polygon(px, py, vertices):
+                if point_in_polygon([px, py], vertices):
                     violated.add(zid)
 
         return violated

@@ -123,13 +123,11 @@ export default function DashboardPage() {
         onClick={handleStreamClick}
         onDoubleClick={handleStreamDoubleClick}
       >
-        {cameraOnline ? (
-          <>
-            <img ref={streamRef} src={`${API_URL}/stream`} alt="Live" className="w-full h-full object-contain" onError={() => { setTimeout(() => { if (streamRef.current) streamRef.current.src = `${API_URL}/stream?t=${Date.now()}`; }, 2000); }} />
-            <canvas ref={overlayRef} className="absolute inset-0 w-full h-full pointer-events-none" />
-          </>
-        ) : (
-          <div className="flex flex-col items-center justify-center">
+        {/* Always render stream img — backend serves offline frame when camera is off */}
+        <img ref={streamRef} src={`${API_URL}/stream`} alt="Live" className="w-full h-full object-contain" style={{ display: cameraOnline ? "block" : "none" }} onError={() => { setTimeout(() => { if (streamRef.current) streamRef.current.src = `${API_URL}/stream?t=${Date.now()}`; }, 2000); }} />
+        <canvas ref={overlayRef} className="absolute inset-0 w-full h-full pointer-events-none" style={{ display: cameraOnline ? "block" : "none" }} />
+        {!cameraOnline && (
+          <div className="flex flex-col items-center justify-center absolute inset-0">
             <Image src="/logo-siews.png" alt="SIEWS+" width={64} height={64} className="opacity-15 mb-6" />
             <p className="text-sm font-medium mb-1" style={{ color: "var(--text-muted)" }}>Camera is turned off</p>
             <p className="text-xs" style={{ color: "var(--text-faint)" }}>Click Cam On to enable the live feed</p>

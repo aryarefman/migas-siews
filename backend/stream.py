@@ -380,13 +380,12 @@ class StreamManager:
         return self.frame
 
     def generate_frames(self):
-        """MJPEG stream generator — adaptive, no artificial cap."""
+        """MJPEG stream generator — 30 FPS output to browser."""
         print("[STREAM] MJPEG Stream client connected")
         while True:
             frame = self.get_frame()
             yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-            # Minimal sleep — just yield CPU, let adaptive controller pace the render loop
-            time.sleep(0.001)
+            time.sleep(0.033)  # 30 FPS — smooth for browser MJPEG
 
     # =========================================================================
     # Zone Management

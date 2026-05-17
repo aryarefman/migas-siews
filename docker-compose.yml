@@ -21,6 +21,8 @@ services:
       - ./backend:/app/backend
       - ./backend/static:/app/backend/static
       - siews-data:/app/data
+    devices:
+      - /dev/video0:/dev/video0
     environment:
       - MODEL_BASE=/app
       - DATABASE_URL=sqlite:////app/data/siews.db

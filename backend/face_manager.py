@@ -37,7 +37,7 @@ class FaceManager:
         3. Result:   Return list of recognized names or "Unknown"
     """
 
-    def __init__(self, tolerance: float = 0.65):
+    def __init__(self, tolerance: float = 0.45):
         self.tolerance = tolerance
         self._registered: List[dict] = []  # [{id, name, code, encoding, image_path}]
         self._haar_cascade = None

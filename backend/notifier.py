@@ -12,6 +12,11 @@ from typing import Optional
 WIB = timezone(timedelta(hours=7))
 
 
+def _extract_phone(entry: str) -> str:
+    """Extract phone number from 'phone|name' format. Returns just the phone part."""
+    return entry.split("|")[0].strip()
+
+
 async def send_whatsapp(
     phone: str,
     zone_name: str,
@@ -28,6 +33,9 @@ async def send_whatsapp(
     Send WhatsApp alert via Fonnte API.
     Returns response dict from Fonnte.
     """
+    # Clean phone number (strip |name suffix if present)
+    phone = _extract_phone(phone)
+
     now_wib = datetime.now(WIB).strftime("%d/%m/%Y %H:%M:%S WIB")
 
     ident_str = ""
@@ -47,6 +55,20 @@ async def send_whatsapp(
         f"Shutdown  : {'AKTIF' if shutdown_triggered else 'TIDAK'}\n\n"
         f"Segera periksa area dan ambil tindakan."
     )
+
+    if not fonnte_token:
+        # Fallback: try to load token from database
+        try:
+            from database import SessionLocal
+            from models import Setting
+            db = SessionLocal()
+            token_setting = db.query(Setting).filter(Setting.key == "fonnte_token").first()
+            if token_setting and token_setting.value:
+                fonnte_token = token_setting.value
+                print(f"[NOTIFIER] Loaded token from DB fallback (len={len(fonnte_token)})")
+            db.close()
+        except Exception as e:
+            print(f"[NOTIFIER] DB fallback failed: {e}")
 
     if not fonnte_token:
         print(f"[NOTIFIER] No Fonnte token set. Message would be sent to {phone}:")
@@ -92,12 +114,20 @@ async def send_to_all_recipients(
 ):
     """
     Send WhatsApp to all recipients (comma-separated string).
+    Handles 'phone|name' format automatically.
     """
     if not recipients_str.strip():
         print("[NOTIFIER] No recipients configured.")
         return []
 
-    phones = [p.strip() for p in recipients_str.split(",") if p.strip()]
+    # Extract phone numbers, stripping |name suffix
+    phones = [_extract_phone(p) for p in recipients_str.split(",") if p.strip()]
+    
+    # Deduplicate
+    phones = list(dict.fromkeys(phones))
+
+    print(f"[NOTIFIER] Sending to {len(phones)} recipients, token_len={len(fonnte_token)}")
+
     tasks = [
         send_whatsapp(
             phone, zone_name, risk_level, confidence, shutdown_triggered, 
@@ -114,7 +144,7 @@ async def send_test_message(fonnte_token: str, recipients_str: str, facility_nam
     if not recipients_str.strip():
         return [{"status": "error", "reason": "no_recipients"}]
 
-    phones = [p.strip() for p in recipients_str.split(",") if p.strip()]
+    phones = [_extract_phone(p) for p in recipients_str.split(",") if p.strip()]
     now_wib = datetime.now(WIB).strftime("%d/%m/%Y %H:%M:%S WIB")
 
     message = (

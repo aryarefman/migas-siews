@@ -290,6 +290,10 @@ class StreamManager:
         self._detection_interval = 1
         self._notify_cooldown = 5
 
+        # WhatsApp notification cooldown (separate from alert creation)
+        self._wa_last_sent: float = 0.0  # timestamp of last WhatsApp sent
+        self._debug_zone_counter: int = 0
+
         # Simulation mode
         self.simulation_frame: Optional[np.ndarray] = None
         self.simulation_cap: Optional[cv2.VideoCapture] = None
@@ -717,19 +721,38 @@ class StreamManager:
             fonnte_token = settings.get("fonnte_token", "")
             recipients = settings.get("recipients", "")
             facility_name = settings.get("facility_name", "Offshore Platform A")
-            recipient_list = [r.strip() for r in recipients.split(",") if r.strip()]
+
+            # Build recipient list:
+            # - If person is identified (face/OCR match) → send to that person's phone only
+            # - If person is Unknown → send to admin recipients from settings
+            recipient_list = []
+            person_phone_found = False
 
             if violation.person_name and violation.person_name != "Unknown":
                 for p in face_manager._registered:
                     if p["name"].lower() == violation.person_name.lower() and p.get("phone"):
-                        if p["phone"] not in recipient_list:
-                            recipient_list.append(p["phone"])
+                        recipient_list.append(p["phone"])
+                        person_phone_found = True
+                        break
 
-            asyncio.create_task(self._send_notifications(
-                recipient_list, zone_name, risk_level, violation.confidence,
-                shutdown_triggered, facility_name, snapshot_filename,
-                violation.person_name, violation.uniform_code
-            ))
+            # Fallback to admin recipients if person not identified or has no phone
+            if not person_phone_found:
+                recipient_list = [r.strip() for r in recipients.split(",") if r.strip()]
+
+            # WhatsApp notification — separate cooldown from alert creation
+            # Alerts always go to DB + WebSocket, but WhatsApp respects notify_cooldown
+            now_ts = time.time()
+            wa_cooldown = int(settings.get("notify_cooldown", "300"))
+            if now_ts - self._wa_last_sent >= wa_cooldown:
+                self._wa_last_sent = now_ts
+                asyncio.create_task(self._send_notifications(
+                    recipient_list, zone_name, risk_level, violation.confidence,
+                    shutdown_triggered, facility_name, snapshot_filename,
+                    violation.person_name, violation.uniform_code, fonnte_token
+                ))
+            else:
+                remaining = wa_cooldown - (now_ts - self._wa_last_sent)
+                print(f"[ALERT-FLOW] WhatsApp skipped (cooldown {remaining:.0f}s remaining)")
 
             ws_event = {
                 "type": "alert",
@@ -755,12 +778,24 @@ class StreamManager:
 
     async def _send_notifications(self, recipients, zone_name, risk_level,
                                    confidence, shutdown_triggered, facility_name,
-                                   snapshot_filename, person_name, uniform_code):
+                                   snapshot_filename, person_name, uniform_code, fonnte_token=""):
         from notifier import send_to_all_recipients
         try:
+            print(f"[ALERT-FLOW] Sending notification: token_len={len(fonnte_token)}, recipients={len(recipients)}")
+            if not fonnte_token:
+                print(f"[ALERT-FLOW] WARNING: fonnte_token is empty! Attempting to reload from DB...")
+                from database import SessionLocal
+                from models import Setting
+                db = SessionLocal()
+                try:
+                    settings = {s.key: s.value for s in db.query(Setting).all()}
+                    fonnte_token = settings.get("fonnte_token", "")
+                    print(f"[ALERT-FLOW] Reloaded token from DB: len={len(fonnte_token)}")
+                finally:
+                    db.close()
             await send_to_all_recipients(
                 ",".join(recipients), zone_name, risk_level, confidence,
-                shutdown_triggered, facility_name, "",
+                shutdown_triggered, facility_name, fonnte_token,
                 snapshot_url=f"/static/snapshots/{snapshot_filename}",
                 person_name=person_name, uniform_code=uniform_code
             )

@@ -351,37 +351,39 @@ class VideoProcessor:
                 final_output = final_output.rsplit(".", 1)[0] + ".mp4"
 
             import subprocess
-            try:
-                # Use imageio-ffmpeg bundled binary (no system ffmpeg needed)
-                import imageio_ffmpeg
-                ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
-                ffmpeg_cmd = [
-                    ffmpeg_path, "-y", "-i", output_path,
-                    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                    "-pix_fmt", "yuv420p",  # Required for browser compatibility
-                    "-movflags", "+faststart",  # Enable streaming
-                    final_output
-                ]
-                result_ffmpeg = subprocess.run(ffmpeg_cmd, capture_output=True, timeout=300)
-                if result_ffmpeg.returncode == 0 and os.path.exists(final_output):
-                    os.remove(output_path)
-                    os.rename(final_output, output_path)
-                    print(f"[VIDEO] Converted to H264: {output_path}")
-                else:
-                    print(f"[VIDEO] FFmpeg failed, applying moov fix: {result_ffmpeg.stderr.decode()[:200]}")
-                    from fix_mp4_moov import fix_moov_position
-                    fix_moov_position(output_path)
-            except ImportError:
-                print("[VIDEO] imageio-ffmpeg not installed, applying moov atom fix")
-                from fix_mp4_moov import fix_moov_position
-                fix_moov_position(output_path)
-            except Exception as e:
-                print(f"[VIDEO] FFmpeg error: {e}, applying moov fix")
+            import shutil as _shutil
+            
+            # Find ffmpeg binary — prefer system ffmpeg, fallback to imageio-ffmpeg
+            ffmpeg_path = _shutil.which("ffmpeg")
+            if not ffmpeg_path:
                 try:
-                    from fix_mp4_moov import fix_moov_position
-                    fix_moov_position(output_path)
-                except Exception as e2:
-                    print(f"[VIDEO] Moov fix also failed: {e2}")
+                    import imageio_ffmpeg
+                    ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+                except ImportError:
+                    ffmpeg_path = None
+
+            if ffmpeg_path:
+                try:
+                    ffmpeg_cmd = [
+                        ffmpeg_path, "-y", "-i", output_path,
+                        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                        "-pix_fmt", "yuv420p",
+                        "-movflags", "+faststart",
+                        final_output
+                    ]
+                    print(f"[VIDEO] Converting with: {ffmpeg_path}")
+                    result_ffmpeg = subprocess.run(ffmpeg_cmd, capture_output=True, timeout=600)
+                    if result_ffmpeg.returncode == 0 and os.path.exists(final_output):
+                        os.remove(output_path)
+                        os.rename(final_output, output_path)
+                        print(f"[VIDEO] Converted to H264: {output_path}")
+                    else:
+                        stderr_msg = result_ffmpeg.stderr.decode()[:300] if result_ffmpeg.stderr else "unknown"
+                        print(f"[VIDEO] FFmpeg conversion failed: {stderr_msg}")
+                except Exception as e:
+                    print(f"[VIDEO] FFmpeg error: {e}")
+            else:
+                print("[VIDEO] WARNING: No ffmpeg found. Video may not play in browser.")
 
             # Verify output file exists and has content
             if os.path.exists(output_path):

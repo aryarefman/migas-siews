@@ -1,8 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
+
+const STORAGE_KEY = "siews_image_tester_result";
 
 interface AnalyzeResult {
   image: string;
@@ -18,6 +20,31 @@ export default function ImageTester() {
   const [analyzing, setAnalyzing] = useState(false);
   const [result, setResult] = useState<AnalyzeResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [ocrError, setOcrError] = useState<string | null>(null);
+
+  // Restore last result from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) setResult(JSON.parse(saved));
+    } catch {}
+  }, []);
+
+  // Save result to localStorage when it changes
+  useEffect(() => {
+    if (result) {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(result));
+      } catch {}
+    }
+  }, [result]);
+
+  const clearResult = () => {
+    setResult(null);
+    setError(null);
+    setOcrError(null);
+    localStorage.removeItem(STORAGE_KEY);
+  };
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -28,19 +55,41 @@ export default function ImageTester() {
     setAnalyzing(true);
     setResult(null);
     setError(null);
-
-    const formData = new FormData();
-    formData.append("file", file);
+    setOcrError(null);
 
     try {
+      // Create separate FormData for each request
+      const detectForm = new FormData();
+      detectForm.append("file", file);
+      const ocrForm = new FormData();
+      ocrForm.append("file", file);
+
       // Run detection + OCR in parallel
       const [detectRes, ocrRes] = await Promise.all([
-        fetch(`${API_URL}/ai/analyze-image`, { method: "POST", body: formData }),
-        fetch(`${API_URL}/ocr/test`, { method: "POST", body: (() => { const f = new FormData(); f.append("file", file); return f; })() }),
+        fetch(`${API_URL}/ai/analyze-image`, { method: "POST", body: detectForm }),
+        fetch(`${API_URL}/ocr/test`, { method: "POST", body: ocrForm }).catch(err => {
+          console.error("[OCR] Request failed:", err);
+          return null;
+        }),
       ]);
 
-      const detectData = detectRes.ok ? await detectRes.json() : {};
-      const ocrData = ocrRes.ok ? await ocrRes.json() : { results: [] };
+      if (!detectRes.ok) {
+        const errData = await detectRes.json().catch(() => ({}));
+        throw new Error(errData.detail || `Detection failed (${detectRes.status})`);
+      }
+
+      const detectData = await detectRes.json();
+      
+      let ocrResults: any[] = [];
+      if (ocrRes && ocrRes.ok) {
+        const ocrData = await ocrRes.json();
+        ocrResults = ocrData.results || [];
+      } else if (ocrRes) {
+        const ocrErrData = await ocrRes.json().catch(() => ({}));
+        setOcrError(ocrErrData.detail || `OCR failed (${ocrRes.status})`);
+      } else {
+        setOcrError("OCR request timed out");
+      }
 
       setResult({
         image: detectData.image || "",
@@ -49,7 +98,7 @@ export default function ImageTester() {
         hazards: detectData.hazards || [],
         vehicles: detectData.vehicles || [],
         road: detectData.road || [],
-        ocr: ocrData.results || [],
+        ocr: ocrResults,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error");
@@ -62,14 +111,14 @@ export default function ImageTester() {
     <div className="space-y-4">
       {/* Upload */}
       {!analyzing ? (
-        <label className="block w-full text-center py-5 rounded-lg border-2 border-dashed border-[var(--border)] hover:border-[var(--accent)]/30 cursor-pointer">
+        <label className="block w-full text-center py-5 rounded-lg border-2 border-dashed border-[var(--border)] hover:border-[var(--accent)]/30 cursor-pointer transition-all">
           <input type="file" className="hidden" accept="image/*" onChange={handleUpload} />
           <span className="text-xs font-medium text-[var(--text-muted)]">+ UPLOAD & ANALYZE</span>
         </label>
       ) : (
         <div className="py-5 text-center rounded-lg border border-[var(--border)]">
           <div className="w-5 h-5 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin mx-auto mb-2" />
-          <p className="text-xs text-[var(--accent-light)]">Processing...</p>
+          <p className="text-xs text-[var(--accent-light)]">Processing AI + OCR...</p>
         </div>
       )}
 
@@ -81,7 +130,7 @@ export default function ImageTester() {
           {result.image && (
             <div className="relative rounded-lg overflow-hidden border border-[var(--border)]">
               <img src={result.image} alt="Result" className="w-full object-contain bg-black" />
-              <button onClick={() => setResult(null)} className="absolute top-2 right-2 w-6 h-6 rounded-full bg-black/70 text-white text-xs flex items-center justify-center">×</button>
+              <button onClick={clearResult} className="absolute top-2 right-2 w-6 h-6 rounded-full bg-black/70 text-white text-xs flex items-center justify-center hover:bg-red-500/80 transition-all">×</button>
             </div>
           )}
 
@@ -152,13 +201,23 @@ export default function ImageTester() {
           {/* OCR */}
           {result.ocr && result.ocr.length > 0 && (
             <div>
-              <h4 className="text-[10px] font-bold text-[var(--text-muted)] uppercase mb-2">OCR Text ({result.ocr.length})</h4>
+              <h4 className="text-[10px] font-bold text-[var(--text-muted)] uppercase mb-2">📝 OCR Text ({result.ocr.length})</h4>
               {result.ocr.map((o: any, i: number) => (
                 <div key={i} className="px-3 py-2 mb-1 rounded bg-[var(--bg-input)] border-l-2 border-cyan-500/60 flex justify-between">
                   <span className="text-xs text-[var(--text-main)] font-mono">{o.text}</span>
                   <span className="text-xs text-cyan-400">{(o.confidence * 100).toFixed(0)}%</span>
                 </div>
               ))}
+            </div>
+          )}
+          {result.ocr && result.ocr.length === 0 && !ocrError && (
+            <div className="px-3 py-2 rounded bg-[var(--bg-input)] border border-[var(--border)]">
+              <p className="text-xs text-[var(--text-faint)]">No text/codes detected by OCR</p>
+            </div>
+          )}
+          {ocrError && (
+            <div className="px-3 py-2 rounded bg-amber-500/10 border border-amber-500/20">
+              <p className="text-xs text-amber-400">OCR: {ocrError}</p>
             </div>
           )}
         </div>

@@ -52,6 +52,9 @@ backend/brain/
 # Pretrain models (too large for git)
 model/Pretrain/
 model/Old/
+# Duplicate models in model/New/ (use Pretrain folder instead)
+model/New/fire_smoke.pt
+model/New/vehicle_best.pt
 
 # Temp scripts
 download_*.py
@@ -64,3 +67,9 @@ vehicle_detection_train.ipynb
 .kiro/
 .agents/
 .codex/
+
+# LaTeX build artifacts
+docs/*.aux
+docs/*.log
+docs/*.out
+docs/*.toc

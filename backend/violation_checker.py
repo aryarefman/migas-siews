@@ -35,10 +35,6 @@ class ViolationChecker:
     def __init__(self, cooldown_seconds: int = 5):
         self._cooldown_seconds = cooldown_seconds
         self._zone_cooldowns: Dict[int, float] = {}
-        # Separate shorter cooldown for PPE violations (per-person)
-        # PPE alerts should feel "live" — shorter cooldown than zone/hazard alerts
-        self._ppe_cooldown_seconds = 30  # 30s between same-person PPE alerts
-        self._ppe_cooldowns: Dict[str, float] = {}  # key: person identifier
 
     def check_ppe_violations(self, persons: List[dict]) -> List[Violation]:
         """
@@ -110,17 +106,38 @@ class ViolationChecker:
             bbox = det["bbox"]
             x1, y1, x2, y2 = bbox
 
-            # Calculate body points (normalized)
-            head_p = [(x1 + x2) / 2 / frame_width, (y1 + (y2 - y1) * 0.2) / frame_height]
-            chest_p = [(x1 + x2) / 2 / frame_width, (y1 + y2) / 2 / frame_height]
-            feet_p = [(x1 + x2) / 2 / frame_width, (y2 - 2) / frame_height]
+            # Normalize bbox to [0-1]
+            nx1 = x1 / frame_width
+            ny1 = y1 / frame_height
+            nx2 = x2 / frame_width
+            ny2 = y2 / frame_height
+            ncx = (nx1 + nx2) / 2
+            ncy = (ny1 + ny2) / 2
+
+            # Sample grid of points across the person bbox (9 points)
+            body_points = [
+                [ncx, ny1 + (ny2 - ny1) * 0.15],   # head center
+                [ncx, ncy],                          # chest center
+                [ncx, ny2 - 0.005],                  # feet center
+                [nx1 + (nx2-nx1)*0.25, ny1 + (ny2-ny1)*0.2],  # head left
+                [nx1 + (nx2-nx1)*0.75, ny1 + (ny2-ny1)*0.2],  # head right
+                [nx1 + (nx2-nx1)*0.25, ncy],         # chest left
+                [nx1 + (nx2-nx1)*0.75, ncy],         # chest right
+                [nx1 + (nx2-nx1)*0.25, ny2 - 0.005], # feet left
+                [nx1 + (nx2-nx1)*0.75, ny2 - 0.005], # feet right
+                # Bbox corners for maximum coverage
+                [nx1, ny1],  # top-left
+                [nx2, ny1],  # top-right
+                [nx1, ny2],  # bottom-left
+                [nx2, ny2],  # bottom-right
+            ]
 
             for z in zones:
-                # Check if any body part is inside zone
-                is_inside = (
-                    point_in_polygon(head_p, z["vertices"]) or
-                    point_in_polygon(chest_p, z["vertices"]) or
-                    point_in_polygon(feet_p, z["vertices"])
+                if len(z.get("vertices", [])) < 3:
+                    continue
+                # Check if any body point is inside zone
+                is_inside = any(
+                    point_in_polygon(pt, z["vertices"]) for pt in body_points
                 )
 
                 if is_inside:
@@ -133,6 +150,7 @@ class ViolationChecker:
                         person_name=det.get("face_name", "Unknown"),
                         uniform_code=det.get("ocr_code"),
                     ))
+                    break  # One violation per person per check
 
         return violations
 
@@ -333,25 +351,15 @@ class ViolationChecker:
         """
         Check if alert should be sent (respects cooldown).
         
-        Cooldown strategy:
-        - PPE violations: 30 seconds (per-person) — feels "live"
-        - Fire/smoke: 60 seconds — urgent but don't spam
-        - Zone violations: uses _cooldown_seconds from settings (default 300s)
-        - Hazard violations: 60 seconds
+        ALL violation types use the same cooldown from settings (notify_cooldown).
+        This ensures WhatsApp notifications are sent at the configured interval
+        regardless of violation type (PPE, fire, zone, hazard).
         """
         now = time.time()
         last_alert = self._zone_cooldowns.get(zone_id, 0)
 
-        # Select cooldown based on violation type
-        if violation_type == "ppe_violation":
-            cooldown = self._ppe_cooldown_seconds
-        elif violation_type == "fire_smoke":
-            cooldown = 60
-        elif violation_type == "hazard_violation":
-            cooldown = 60
-        else:
-            # Zone violations and others use the configured cooldown
-            cooldown = self._cooldown_seconds
+        # All violations use the same configured cooldown
+        cooldown = self._cooldown_seconds
 
         if now - last_alert < cooldown:
             return False

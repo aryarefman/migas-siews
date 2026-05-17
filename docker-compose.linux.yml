@@ -1,5 +1,5 @@
 # ============================================================
-# SIEWS+ 5.0 — All-in-One Single Container (Linux GPU)
+# SIEWS+ 5.0 — All-in-OContainer (Linux GPU)
 # Runs backend + inference + frontend in ONE container
 # Base: nvidia/cuda debian-slim (lightweight + GPU)
 #
@@ -15,7 +15,7 @@
 # Requirements:
 #   - NVIDIA GPU + nvidia-container-toolkit
 #   - /dev/video0 webcam (optional)
-# ============================================================
+
 
 services:
   siews:

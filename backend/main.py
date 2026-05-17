@@ -379,6 +379,71 @@ async def reset_stream():
     return {"status": "live_active", "message": "Kembali ke kamera live"}
 
 
+# ─── Video Simulation Alert ──────────────────────────────────
+class SimAlertRequest(BaseModel):
+    zone_name: str
+    risk_level: str = "high"
+    violation_type: str = "zone_violation"
+    person_name: str = "Unknown"
+    confidence: float = 0.9
+    source: str = "video_simulation"
+
+
+@app.post("/alerts/sim")
+async def create_sim_alert(req: SimAlertRequest, db: Session = Depends(get_db)):
+    """Create alert from Video Simulation zone violation and send WhatsApp notification."""
+    now_utc = datetime.now(timezone.utc)
+
+    # Save alert to DB
+    alert = Alert(
+        zone_id=None,
+        confidence=req.confidence,
+        snapshot_path=None,
+        timestamp=now_utc,
+        shutdown_triggered=False,
+        resolved=False,
+        violation_type=req.violation_type,
+        person_name=req.person_name,
+    )
+    db.add(alert)
+    db.commit()
+    db.refresh(alert)
+
+    # Send WhatsApp notification
+    settings = {s.key: s.value for s in db.query(Setting).all()}
+    fonnte_token = settings.get("fonnte_token", "")
+    recipients = settings.get("recipients", "")
+    facility_name = settings.get("facility_name", "Offshore Platform A")
+
+    if fonnte_token and recipients:
+        from notifier import send_to_all_recipients
+        try:
+            await send_to_all_recipients(
+                recipients, req.zone_name, req.risk_level, req.confidence,
+                False, facility_name, fonnte_token,
+                person_name=req.person_name,
+            )
+        except Exception as e:
+            print(f"[SIM-ALERT] Notification error: {e}")
+
+    # Broadcast via WebSocket
+    ws_event = {
+        "type": "alert",
+        "alert_id": alert.id,
+        "zone_name": req.zone_name,
+        "risk_level": req.risk_level,
+        "timestamp": now_utc.isoformat(),
+        "confidence": req.confidence,
+        "shutdown_triggered": False,
+        "person_name": req.person_name,
+        "violation_type": req.violation_type,
+        "source": req.source,
+    }
+    await stream_manager._broadcast_to_ws(ws_event)
+
+    return {"status": "alert_created", "alert_id": alert.id}
+
+
 # ─── Pydantic Schemas ────────────────────────────────────────
 class ZoneCreate(BaseModel):
     name: str

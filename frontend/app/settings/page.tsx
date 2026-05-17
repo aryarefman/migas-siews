@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import LoadingScreen from "@/components/LoadingScreen";
 import ImageTester from "@/components/ImageTester";
+import VideoSimPlayer from "@/components/VideoSimPlayer";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
 
@@ -32,6 +33,8 @@ export default function SettingsPage() {
   const [videoJobs, setVideoJobs] = useState<VideoJob[]>([]);
   const [uploading, setUploading] = useState(false);
   const [videoProgress, setVideoProgress] = useState<Record<number, number>>({});
+  // Video simulation
+  const [activeSimJob, setActiveSimJob] = useState<VideoJob | null>(null);
 
   const fetchSettings = useCallback(async () => {
     setLoading(true);
@@ -99,8 +102,11 @@ export default function SettingsPage() {
         confidence_threshold: settings.confidence_threshold || "0.5",
         detection_interval: settings.detection_interval || "3",
         notify_cooldown: settings.notify_cooldown || "300",
-        fonnte_token: settings.fonnte_token || "",
       };
+      // Only save fonnte_token if it has a value (don't overwrite with empty)
+      if (settings.fonnte_token) {
+        toSave.fonnte_token = settings.fonnte_token;
+      }
       for (const [key, value] of Object.entries(toSave)) await saveSetting(key, value);
       await saveSetting("recipients", recipients.map(r => r.name ? `${r.phone}|${r.name}` : r.phone).join(","));
       showToastMsg("Settings saved");
@@ -234,7 +240,8 @@ export default function SettingsPage() {
                 <div className="space-y-4">
                   <div>
                     <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">Cooldown (seconds)</label>
-                    <input type="number" min="30" max="3600" value={settings.notify_cooldown || "300"} onChange={e => updateSetting("notify_cooldown", e.target.value)} className="input-field font-mono !w-32 text-sm" />
+                    <input type="number" min="1" value={settings.notify_cooldown || "300"} onChange={e => updateSetting("notify_cooldown", e.target.value)} className="input-field font-mono !w-32 text-sm" />
+                    <p className="text-[10px] text-[var(--text-faint)] mt-1">Interval minimum antar notifikasi WhatsApp (1s = real-time, 300s = 5 menit)</p>
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">API Token</label>
@@ -244,7 +251,8 @@ export default function SettingsPage() {
                     </div>
                   </div>
                   <div>
-                    <label className="block text-xs font-medium text-[var(--text-muted)] mb-2">Recipients</label>
+                    <label className="block text-xs font-medium text-[var(--text-muted)] mb-1">Admin / Operator</label>
+                    <p className="text-[10px] text-[var(--text-faint)] mb-2">Menerima notifikasi saat personel tidak dikenali (Unknown). Jika personel dikenali, notifikasi dikirim langsung ke nomor HP personel tersebut.</p>
                     {recipients.map(r => (
                       <div key={r.phone} className="flex items-center justify-between px-3 py-2 mb-1.5 rounded-lg bg-[var(--bg-input)] border border-[var(--border)]">
                         <span className="text-xs font-mono">{r.phone} {r.name && <span className="text-[var(--text-faint)]">[{r.name}]</span>}</span>
@@ -333,54 +341,49 @@ export default function SettingsPage() {
             </div>
           )}
 
-          {/* Video Simulation — Play video as live feed with all detection features */}
+          {/* Video Simulation — Play annotated video with zone drawing overlay */}
           {activeTab === "video-sim" && (
             <div className="space-y-5">
               <div className="surface-card p-6">
                 <h2 className="text-sm font-semibold text-[var(--text-main)] mb-2">Video Simulation</h2>
-                <p className="text-xs text-[var(--text-muted)] mb-5">Play a processed video as live camera feed. All detection features active: face recognition, PPE check, zone violations, WhatsApp alerts.</p>
+                <p className="text-xs text-[var(--text-muted)] mb-5">Play annotated video and draw polygon zones. Objects entering zones trigger alerts in real-time. No camera needed.</p>
 
-                {/* Video list */}
-                <div className="space-y-2 mb-4">
-                  {videoJobs.filter(j => j.status === "done").length === 0 ? (
-                    <p className="text-center py-6 text-xs" style={{ color: "var(--text-faint)" }}>No videos ready. Upload via Video Processing tab first.</p>
-                  ) : (
-                    videoJobs.filter(j => j.status === "done").map(job => (
-                      <div key={job.id} className="p-3 rounded-lg border flex items-center justify-between" style={{ background: "var(--bg-input)", borderColor: "var(--border)" }}>
-                        <div>
-                          <span className="text-sm font-medium" style={{ color: "var(--text-main)" }}>{job.filename}</span>
-                          <p className="text-[10px]" style={{ color: "var(--text-faint)" }}>{new Date(job.created_at).toLocaleString()}</p>
+                {/* Video selector or active player */}
+                {!activeSimJob ? (
+                  <div className="space-y-2">
+                    {videoJobs.filter(j => j.status === "done").length === 0 ? (
+                      <p className="text-center py-6 text-xs" style={{ color: "var(--text-faint)" }}>No videos ready. Upload via Video Processing tab first.</p>
+                    ) : (
+                      videoJobs.filter(j => j.status === "done").map(job => (
+                        <div key={job.id} className="p-3 rounded-lg border flex items-center justify-between" style={{ background: "var(--bg-input)", borderColor: "var(--border)" }}>
+                          <div>
+                            <span className="text-sm font-medium" style={{ color: "var(--text-main)" }}>{job.filename}</span>
+                            <p className="text-[10px]" style={{ color: "var(--text-faint)" }}>{new Date(job.created_at).toLocaleString()}</p>
+                          </div>
+                          <button onClick={() => setActiveSimJob(job)} className="px-3 py-1.5 rounded-lg text-xs font-medium bg-purple-500/15 text-purple-400 hover:bg-purple-500/25 transition-all">
+                            ▶ Open Simulation
+                          </button>
                         </div>
-                        <button onClick={async () => {
-                          try {
-                            const r = await fetch(`${API_URL}/stream/simulate-video?job_id=${job.id}`, { method: "POST" });
-                            if (r.ok) showToastMsg(`Playing "${job.filename}" — go to Dashboard to see live feed`);
-                            else showToastMsg("Failed to start", "error");
-                          } catch { showToastMsg("Error", "error"); }
-                        }} className="px-3 py-1.5 rounded-lg text-xs font-medium bg-purple-500/15 text-purple-400 hover:bg-purple-500/25 transition-all">
-                          ▶ Play as Live
-                        </button>
+                      ))
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-medium text-purple-400">▶ {activeSimJob.filename}</span>
                       </div>
-                    ))
-                  )}
-                </div>
-
-                {/* Stop button */}
-                <button onClick={async () => {
-                  await fetch(`${API_URL}/stream/reset`, { method: "POST" });
-                  showToastMsg("Simulation stopped");
-                }} className="w-full py-2 rounded-lg text-xs font-medium border border-red-500/20 text-red-400 hover:bg-red-500/10 transition-all">
-                  Stop Simulation → Back to Camera
-                </button>
-              </div>
-
-              {/* Live preview */}
-              <div className="surface-card p-4">
-                <h3 className="text-xs font-semibold text-[var(--text-muted)] uppercase mb-3">Live Preview (with detections)</h3>
-                <div className="rounded-lg overflow-hidden border" style={{ borderColor: "var(--border)" }}>
-                  <img src={`${API_URL}/stream`} alt="Simulation Feed" className="w-full aspect-video object-contain bg-black" />
-                </div>
-                <p className="text-[10px] mt-2" style={{ color: "var(--text-faint)" }}>This shows the MJPEG stream with all AI detections overlaid. Zone violations and PPE alerts will trigger in real-time.</p>
+                      <button onClick={() => setActiveSimJob(null)} className="px-3 py-1.5 rounded-lg text-xs font-medium border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--bg-input)] transition-all">
+                        ← Back to List
+                      </button>
+                    </div>
+                    <VideoSimPlayer
+                      jobId={activeSimJob.id}
+                      filename={activeSimJob.filename}
+                      onAlert={(msg) => showToastMsg(msg, "error")}
+                    />
+                  </div>
+                )}
               </div>
             </div>
           )}

@@ -350,9 +350,7 @@ class UnifiedDetector:
                     # Skip "other" class — model uses it for non-fire/smoke
                     if label.lower() not in FIRE_SMOKE_LABELS:
                         continue
-                    # Reject if covers >60% of frame (background)
-                    if bbox_area_ratio(bbox, frame) > 0.60:
-                        continue
+                    # No area filter for photo mode — user intentionally uploaded this image
                 elif not is_valid_fire_smoke_hazard(label, conf, bbox, frame):
                     continue
 
